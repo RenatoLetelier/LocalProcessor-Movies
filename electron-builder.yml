@@ -1,5 +1,5 @@
-appId: com.localprocessor.app
-productName: LocalProcessor
+appId: com.localprocessor.movies
+productName: LocalProcessor-Movies
 copyright: Copyright © 2026 Renato Letelier
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 

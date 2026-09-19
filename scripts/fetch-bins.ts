@@ -143,7 +143,7 @@ async function fetchLicenses(): Promise<void> {
 function writeManifest(): void {
   const source = FFMPEG[target]!
   const lines = [
-    'Componentes de terceros incluidos en LocalProcessor',
+    'Componentes de terceros incluidos en LocalProcessor-Movies',
     '',
     `ffmpeg / ffprobe ${source.version} — ${source.license}`,
     ...source.archives.map((u) => `  ${u}`),

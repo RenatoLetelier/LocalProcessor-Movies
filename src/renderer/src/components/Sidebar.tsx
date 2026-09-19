@@ -14,7 +14,7 @@ export function Sidebar({ active, onSelect }: SidebarProps) {
     <aside className="sidebar">
       <div className="sidebar__brand">
         <span className="sidebar__logo" aria-hidden="true">LP</span>
-        <span className="sidebar__title">LocalProcessor</span>
+        <span className="sidebar__title">LocalProcessor-Movies</span>
       </div>
 
       <nav className="sidebar__nav" aria-label="Secciones">

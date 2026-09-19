@@ -1,7 +1,7 @@
 # Documentación Funcional — Motor de Transcodificación VOD
 
 **Estado:** v1 implementada
-**Nombre del proyecto:** LocalProcessor
+**Nombre del proyecto:** LocalProcessor-Movies
 
 ---
 

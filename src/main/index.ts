@@ -10,6 +10,7 @@ import { ServerEvents } from '@server/jobs/events'
 import { JobRunner } from '@server/jobs/runner'
 import { resolveBinaries } from '@pipeline/binaries'
 import { detectHardware } from '@pipeline/hardware'
+import { adoptLegacyDataDir } from './data-dir'
 import { createMainWindow, rendererOrigin } from './window'
 import { registerIpcHandlers } from './ipc'
 import { buildRendererCsp, registerRendererScheme, serveRenderer } from './renderer-protocol'
@@ -51,10 +52,11 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function main(): Promise<void> {
-  electronApp.setAppUserModelId('com.localprocessor.app')
+  electronApp.setAppUserModelId('com.localprocessor.movies')
   setupMenu()
 
   const dataDir = process.env.LP_DATA_DIR || app.getPath('userData')
+  const adopted = !process.env.LP_DATA_DIR && adoptLegacyDataDir(dataDir)
   database = openDatabase(join(dataDir, DB_FILE_NAME))
 
   const resourcesDir = is.dev ? join(app.getAppPath(), 'resources') : process.resourcesPath
@@ -88,6 +90,7 @@ async function main(): Promise<void> {
   const listener = new ApiListener(serverOptions)
   server = await listener.start(apiHostFor(database.repos.settings.getConfig()))
   server.log.info({ node: process.versions.node, electron: process.versions.electron, dataDir, binaries }, 'runtime')
+  if (adopted) server.log.warn({ dataDir }, 'base de datos copiada desde la carpeta de LocalProcessor 1.0')
   server.log.info({ encoders: hardware.encoders.map((e) => `${e.kind}:${e.available ? 'ok' : e.error}`), preferred: hardware.preferred }, 'hardware')
   events.subscribe((event) => {
     if (event.type === 'config.updated') listener.switchTo(apiHostFor(event.config))

@@ -28,7 +28,7 @@ export function FirstRun() {
   return (
     <div className="first-run">
       <div className="card first-run__card">
-        <h2>Bienvenido a LocalProcessor</h2>
+        <h2>Bienvenido a LocalProcessor-Movies</h2>
         <p>
           Elige la carpeta donde se publicarán las películas convertidas. Cada título ocupará una subcarpeta con sus calidades, pistas de
           audio y manifiestos HLS/DASH, lista para que otro sistema la sirva por streaming.

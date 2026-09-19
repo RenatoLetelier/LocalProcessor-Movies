@@ -1,4 +1,4 @@
-# LocalProcessor
+# LocalProcessor-Movies
 
 **Motor de transcodificación VOD de escritorio.** Recibe una película (`.mkv`,
 `.mp4`, `.avi`…) y publica una carpeta lista para *streaming adaptativo* — HLS
@@ -66,12 +66,12 @@ Los documentos de diseño (funcional y técnico) están en [`docs/`](docs/).
 
 ## 2. Cómo encaja en Localcloud
 
-LocalProcessor es un servicio de conversión que corre en un PC de la red.
+LocalProcessor-Movies es un servicio de conversión que corre en un PC de la red.
 Localcloud le entrega películas por la API, espera a que terminen y sirve la
 carpeta resultante a los reproductores.
 
 ```
-Localcloud (backend)                          LocalProcessor (app de escritorio · API 127.0.0.1:4700)
+Localcloud (backend)                          LocalProcessor-Movies (app de escritorio · API 127.0.0.1:4700)
 ────────────────────────────────────          ─────────────────────────────────────────────────────
 1. POST /titles { sourcePath }        ──────▶ registra el título, lo encola y responde 201 { title, job }
 2. WS /jobs/stream  (o GET /jobs/:id) ◀────── job.progress … job.updated { status: "done" }
@@ -82,7 +82,7 @@ Localcloud (backend)                          LocalProcessor (app de escritorio 
 
 **Reparto de responsabilidades**
 
-| | LocalProcessor | Localcloud |
+| | LocalProcessor-Movies | Localcloud |
 |---|---|---|
 | Guardar el archivo original | No: lo procesa desde donde está (si se sube por multipart, guarda una copia en `.uploads/`) | Sí |
 | Analizar, convertir y empaquetar | Sí | No |
@@ -105,11 +105,11 @@ Localcloud (backend)                          LocalProcessor (app de escritorio 
    red local* en Configuración y enviar el token que genera la aplicación
    (`Authorization: Bearer <token>`). Es HTTP sin cifrar: pensado para una red
    doméstica o de confianza.
-4. **`sourcePath` se resuelve en el PC de LocalProcessor.** Debe ser una ruta
+4. **`sourcePath` se resuelve en el PC de LocalProcessor-Movies.** Debe ser una ruta
    absoluta que ese equipo pueda abrir. Si Localcloud corre en otra máquina,
    sube el archivo por multipart o usa una carpeta compartida montada en el PC
-   de LocalProcessor.
-5. **La carpeta de salida la tienen que ver los dos.** LocalProcessor escribe
+   de LocalProcessor-Movies.
+5. **La carpeta de salida la tienen que ver los dos.** LocalProcessor-Movies escribe
    en ella; Localcloud la sirve. Si no comparten disco, comparte la carpeta por
    la red (SMB/NFS) o monta el servidor de archivos de Localcloud en el mismo PC.
 6. **El original debe seguir existiendo** para reprocesar más adelante (agregar
@@ -123,14 +123,14 @@ Localcloud (backend)                          LocalProcessor (app de escritorio 
 ## 3. Instalación
 
 Descarga el instalador de tu sistema desde la página de
-[*releases*](https://github.com/RenatoLetelier/LocalProcessor/releases) y
+[*releases*](https://github.com/RenatoLetelier/LocalProcessor-Movies/releases) y
 ejecútalo. Todo viene incluido; no hay que instalar nada más.
 
 | Sistema | Archivo | Notas |
 |---|---|---|
-| Windows 10/11 x64 | `LocalProcessor-<versión>-win-x64.exe` | Instalación por usuario (sin administrador) en `%LOCALAPPDATA%\Programs\LocalProcessor`. Al no estar firmado, SmartScreen muestra *editor desconocido*: **Más información → Ejecutar de todas formas**. |
-| macOS (Apple Silicon o Intel) | `LocalProcessor-<versión>-mac-arm64.dmg` o `-mac-x64.dmg` | Sin firmar: la primera vez hay que autorizarla en *Privacidad y seguridad*. En Apple Silicon, ffmpeg corre a través de Rosetta 2. |
-| Linux x64 | `LocalProcessor-<versión>-linux-x86_64.AppImage` o `-linux-amd64.deb` | El AppImage no necesita instalación (`chmod +x` y ejecutar). |
+| Windows 10/11 x64 | `LocalProcessor-Movies-<versión>-win-x64.exe` | Instalación por usuario (sin administrador) en `%LOCALAPPDATA%\Programs\LocalProcessor-Movies`. Al no estar firmado, SmartScreen muestra *editor desconocido*: **Más información → Ejecutar de todas formas**. |
+| macOS (Apple Silicon o Intel) | `LocalProcessor-Movies-<versión>-mac-arm64.dmg` o `-mac-x64.dmg` | Sin firmar: la primera vez hay que autorizarla en *Privacidad y seguridad*. En Apple Silicon, ffmpeg corre a través de Rosetta 2. |
+| Linux x64 | `LocalProcessor-Movies-<versión>-linux-x86_64.AppImage` o `-linux-amd64.deb` | El AppImage no necesita instalación (`chmod +x` y ejecutar). |
 
 Al abrirla por primera vez pide la **carpeta de salida**: ahí publicará una
 subcarpeta por título. Conviene un disco con espacio de sobra (ver
@@ -141,9 +141,14 @@ La aplicación guarda su base de datos y configuración en:
 
 | Sistema | Carpeta de datos |
 |---|---|
-| Windows | `%APPDATA%\LocalProcessor` |
-| macOS | `~/Library/Application Support/LocalProcessor` |
-| Linux | `~/.config/LocalProcessor` |
+| Windows | `%APPDATA%\LocalProcessor-Movies` |
+| macOS | `~/Library/Application Support/LocalProcessor-Movies` |
+| Linux | `~/.config/LocalProcessor-Movies` |
+
+Hasta la versión 1.0.0 la aplicación se llamaba *LocalProcessor* y usaba la
+carpeta `LocalProcessor` del mismo sitio: la primera vez que arranca la versión
+renombrada copia esa base de datos, así que la biblioteca se conserva. La
+versión antigua queda instalada como programa aparte y se puede desinstalar.
 
 Al arrancar detecta los codificadores disponibles (se ven en *Configuración* y
 en `GET /system`). Si un codificador por hardware falla, el trabajo se repite
@@ -239,7 +244,7 @@ lo que necesita sin llamar a la API.
 | `standards`, `manifests` | Estándares generados y la ruta relativa de cada manifiesto. |
 | `segmentDurationSeconds` | Duración real de los segmentos: la configurada (6 s por defecto) ajustada a un número entero de fotogramas. |
 | `dynamicRange` | `source` es `sdr`, `pq` (HDR10) o `hlg`; `output` es siempre `sdr`. |
-| `source` | Ruta, tamaño y características del archivo original. La ruta es la del PC de LocalProcessor. |
+| `source` | Ruta, tamaño y características del archivo original. La ruta es la del PC de LocalProcessor-Movies. |
 | `renditions[]` | Calidades publicadas. `bitrate` es el promedio medido en bps; `maxBitrate` el tope del codificador. `path` es la carpeta relativa. |
 | `audioTracks[]` | Idioma en BCP-47 (`es`, `en`, `es-419`; `und` si el origen no lo indica), nombre legible, códec de salida y canales. `sourceIndex`/`sourceCodec` identifican la pista en el original. |
 | `subtitleTracks[]` | Siempre `format: "vtt"`; `forced` marca los subtítulos forzados. |
@@ -323,7 +328,7 @@ Mientras tanto, la versión anterior sigue completa y servible.
 ## 5. Guía de integración paso a paso
 
 Todos los ejemplos usan el mismo PC (`http://127.0.0.1:4700`). Desde otra
-máquina, cambia la dirección por la IP del PC de LocalProcessor y añade
+máquina, cambia la dirección por la IP del PC de LocalProcessor-Movies y añade
 `-H 'Authorization: Bearer <token>'` a cada llamada (ver
 [dirección y autenticación](#61-dirección-y-autenticación)). Los comandos
 `curl` usan comillas simples: valen en bash, macOS, Linux, PowerShell 7 (con
@@ -331,14 +336,14 @@ máquina, cambia la dirección por la IP del PC de LocalProcessor y añade
 escribir con barras normales (`C:/Peliculas/...`); la API devuelve las rutas
 tal como las escribe el sistema operativo (en Windows, con barras invertidas).
 
-### 5.1 Comprobar que LocalProcessor está disponible
+### 5.1 Comprobar que LocalProcessor-Movies está disponible
 
 ```bash
 curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor", "version": "1.0.0", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.1.0", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,
@@ -348,7 +353,7 @@ comprueba también que hay carpeta de salida: `GET /config` devuelve
 
 ### 5.2 Entregar una película
 
-**Opción A · Por ruta (JSON).** Para archivos que el PC de LocalProcessor puede
+**Opción A · Por ruta (JSON).** Para archivos que el PC de LocalProcessor-Movies puede
 abrir. El archivo no se copia: se procesa desde donde está.
 
 ```bash
@@ -357,7 +362,7 @@ curl -X POST http://127.0.0.1:4700/titles -H 'Content-Type: application/json' -d
 
 **Opción B · Subiendo el archivo (multipart).** Para clientes en otra máquina.
 El archivo viaja en el campo `file` (uno por petición, sin límite de tamaño) y
-se guarda en `<salida>/.uploads/<uuid>.<ext>`; LocalProcessor lo conserva para
+se guarda en `<salida>/.uploads/<uuid>.<ext>`; LocalProcessor-Movies lo conserva para
 reprocesados y lo borra junto con el título.
 
 ```bash
@@ -392,7 +397,7 @@ y `job.id` (para seguir el progreso):
     "source_video_codec": "h264",
     "source_hdr": null,
     "duration_seconds": 5400.5,
-    "output_folder": "C:\\LocalProcessor\\0f6c1c2e-8f0e-4c7b-9a3d-1b2c3d4e5f60",
+    "output_folder": "C:\\LocalProcessor-Movies\\0f6c1c2e-8f0e-4c7b-9a3d-1b2c3d4e5f60",
     "status": "queued",
     "error": null,
     "created_at": "2026-09-18T02:10:00.000Z",
@@ -466,7 +471,7 @@ segmentos aparecen colapsadas como una entrada `kind: "segments"`).
 
 ### 5.5 Servir la carpeta
 
-LocalProcessor no sirve archivos: Localcloud publica `<salida>/<uuid>/` con un
+LocalProcessor-Movies no sirve archivos: Localcloud publica `<salida>/<uuid>/` con un
 servidor de archivos estáticos y entrega al reproductor la URL del manifiesto:
 
 ```
@@ -520,7 +525,7 @@ curl -X POST http://127.0.0.1:4700/titles/<id>/reprocess -H 'Content-Type: appli
 ```
 
 Los archivos externos de `files` llevan `path` (ruta en el PC de
-LocalProcessor), `kind` (`audio` o `subtitle`) y, opcionalmente, `language`
+LocalProcessor-Movies), `kind` (`audio` o `subtitle`) y, opcionalmente, `language`
 (BCP-47), `name` y `forced`.
 
 ### 5.7 Eliminar un título
@@ -535,7 +540,7 @@ entregado por ruta nunca se toca.
 
 ### 5.8 Reconstruir la biblioteca
 
-La carpeta de salida es autodescriptiva: si la base de datos de LocalProcessor
+La carpeta de salida es autodescriptiva: si la base de datos de LocalProcessor-Movies
 se pierde o la carpeta cambia de sitio, `POST /titles/import` recorre
 `<salida>/<uuid>/`, importa los títulos que no estén en la biblioteca y
 revincula los que cambiaron de carpeta. Responde
@@ -624,7 +629,7 @@ function esperarJob(jobId) {
       if (event.type === 'job.progress' && event.job.id === jobId) console.log(`${event.job.current_step} ${event.job.progress}%`)
       if (event.type === 'job.updated' && event.job.id === jobId && TERMINADO.includes(event.job.status)) terminar(event.job)
     }
-    ws.onerror = () => reject(new Error('sin conexión con LocalProcessor'))
+    ws.onerror = () => reject(new Error('sin conexión con LocalProcessor-Movies'))
   })
 }
 ```
@@ -681,8 +686,8 @@ function esperarJob(jobId) {
 |---|---|---|
 | `id` | uuid | Identificador; nombre de la carpeta de salida. |
 | `name` | texto | Nombre del título. |
-| `source_path` | texto o `null` | Ruta del original en el PC de LocalProcessor; `null` en títulos importados sin origen. |
-| `source_managed` | booleano | `true` si el original se subió por multipart (LocalProcessor lo borra con el título). |
+| `source_path` | texto o `null` | Ruta del original en el PC de LocalProcessor-Movies; `null` en títulos importados sin origen. |
+| `source_managed` | booleano | `true` si el original se subió por multipart (LocalProcessor-Movies lo borra con el título). |
 | `source_hash` | texto o `null` | Huella del original, para detectar cambios entre reprocesados. |
 | `source_width`, `source_height`, `source_fps`, `source_video_bitrate`, `source_video_codec` | — | Características del original. |
 | `source_hdr` | `null`, `"pq"` o `"hlg"` | Rango dinámico del original (la salida es siempre SDR). |
@@ -799,7 +804,7 @@ Actions (`.github/workflows/release.yml`) genera los tres instaladores y los
 adjunta a un *release* al publicar un tag `v*`:
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.2.0 && git push origin v1.2.0
 ```
 
 Los instaladores no están firmados y la aplicación no se actualiza sola: para

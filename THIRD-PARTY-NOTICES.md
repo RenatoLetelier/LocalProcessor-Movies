@@ -1,6 +1,6 @@
 # Componentes de terceros
 
-LocalProcessor se distribuye bajo licencia MIT (ver `LICENSE`). El instalador
+LocalProcessor-Movies se distribuye bajo licencia MIT (ver `LICENSE`). El instalador
 incluye además estos programas, que la aplicación ejecuta como procesos
 separados y cuyas licencias son las de sus autores:
 

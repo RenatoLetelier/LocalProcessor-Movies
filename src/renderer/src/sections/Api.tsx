@@ -79,7 +79,7 @@ export function Api() {
 
   const sourcePath = path.trim() || EXAMPLE_PATH
   const title = name.trim()
-  const outputFolder = config?.outputFolder ?? (ON_WINDOWS ? 'D:\\LocalProcessor' : '/srv/localprocessor')
+  const outputFolder = config?.outputFolder ?? (ON_WINDOWS ? 'D:\\LocalProcessor-Movies' : '/srv/localprocessor-movies')
   const titleFolder = `${outputFolder}${ON_WINDOWS ? '\\' : '/'}${EXAMPLE_TITLE_ID}`
 
   const jsonCurl = curl([
