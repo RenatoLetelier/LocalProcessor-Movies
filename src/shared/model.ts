@@ -81,3 +81,21 @@ export interface Job {
   started_at: string | null
   finished_at: string | null
 }
+
+// Action log: every state change, job step and failure, kept in SQLite for the Logs section
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type LogCategory = 'app' | 'api' | 'config' | 'titles' | 'jobs' | 'pipeline'
+export const LOG_LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error']
+export const LOG_CATEGORIES: LogCategory[] = ['app', 'api', 'config', 'titles', 'jobs', 'pipeline']
+
+export interface LogEntry {
+  id: number
+  ts: string
+  level: LogLevel
+  category: LogCategory
+  message: string
+  job_id: string | null
+  title_id: string | null
+  // Structured detail (paths, sizes, commands, the last ffmpeg lines on a failure)
+  context: Record<string, unknown> | null
+}

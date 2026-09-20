@@ -190,9 +190,17 @@ export interface VideoEncoderOptions {
   crf?: number
 }
 
+// Structured account of what a step decided or produced, for the action log
+export interface PipelineLogEvent {
+  level: 'debug' | 'info' | 'warn'
+  message: string
+  context?: Record<string, unknown>
+}
 export interface PipelineHooks {
   onProgress?: (event: ProgressEvent) => void
+  // Raw ffmpeg / packager output and commands, line by line
   onLog?: (line: string) => void
+  onEvent?: (event: PipelineLogEvent) => void
   signal?: AbortSignal
 }
 

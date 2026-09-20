@@ -7,6 +7,8 @@ import { createRepositories, type Repositories } from './repositories'
 export interface AppDatabase {
   db: DatabaseSync
   repos: Repositories
+  // Schema versions applied by this open (empty when the file was already current)
+  migrationsApplied: number[]
   close(): void
 }
 
@@ -22,7 +24,7 @@ export function openDatabase(file: string): AppDatabase {
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
   `)
-  runMigrations(db)
+  const migrationsApplied = runMigrations(db)
 
-  return { db, repos: createRepositories(db), close: () => db.close() }
+  return { db, repos: createRepositories(db), migrationsApplied, close: () => db.close() }
 }

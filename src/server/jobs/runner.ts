@@ -1,11 +1,16 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { basename } from 'node:path'
 import type { Job } from '@shared/model'
-import { addToTitle, processTitle } from '@pipeline/index'
+import { PipelineError, addToTitle, processTitle } from '@pipeline/index'
 import { SOFTWARE_ENCODER, encoderSpec, isHardwareEncoder, type EncoderKind } from '@pipeline/encoders'
 import { ProcessError } from '@pipeline/exec'
 import type { HardwareInfo } from '@pipeline/hardware'
+import { audioTrackId, subtitleTrackId } from '@pipeline/layout'
 import type { Binaries, ExternalTrack, PipelineHooks, PipelineResult, ProgressEvent, VideoEncoderOptions } from '@pipeline/types'
 import type { Repositories } from '../db/repositories'
+import { formatDuration } from '../logging/format'
+import type { JobOutputStore } from '../logging/job-output'
+import { AppLogger, errorContext } from '../logging/logger'
 import { computeConcurrency, resolveEncoder } from './concurrency'
 import { parseJobConfig, type JobConfig } from './config'
 import type { ServerEvents } from './events'
@@ -22,13 +27,6 @@ export interface ReprocessConfig extends JobConfig {
   externalTracks?: ExternalTrack[]
 }
 
-export interface RunnerLogger {
-  info(msg: string): void
-  warn(msg: string): void
-  error(msg: string): void
-  debug(msg: string): void
-}
-
 export interface RunnerDeps {
   db: DatabaseSync
   repos: Repositories
@@ -39,7 +37,9 @@ export interface RunnerDeps {
   // Fixed number, or derived from the detected hardware and the current config
   concurrency?: number
   hardware?: HardwareInfo | null
-  log?: RunnerLogger
+  log?: AppLogger
+  // Where each job's full ffmpeg / packager output goes; absent in tests
+  jobOutput?: JobOutputStore
 }
 
 // A job interrupted this many times by a crash is given up on
@@ -58,16 +58,20 @@ export class JobRunner {
   private readonly running = new Map<string, RunningJob>()
   private readonly pipeline: PipelineFn
   private readonly incremental: IncrementalFn
-  private readonly log: RunnerLogger
+  private readonly log: AppLogger
+  private started = false
   private stopping = false
 
   constructor(private readonly deps: RunnerDeps) {
     this.pipeline = deps.pipeline ?? processTitle
     this.incremental = deps.incremental ?? addToTitle
-    this.log = deps.log ?? { info() {}, warn() {}, error() {}, debug() {} }
+    this.log = deps.log ?? AppLogger.silent()
   }
 
+  // Recovery must run before any job starts, so notify() is inert until then
   start(): void {
+    if (this.started) return
+    this.started = true
     this.recover()
     this.tick()
   }
@@ -86,6 +90,11 @@ export class JobRunner {
           attempts: Math.max(0, row.attempts - 1)
         })
         this.deps.repos.titles.update(row.title_id, { status: 'queued' })
+        this.log.info('jobs', 'Job interrumpido por el cierre de la aplicación; se reanudará desde cero al arrancar', {
+          jobId: id,
+          titleId: row.title_id,
+          context: { step: row.current_step, progress: row.progress }
+        })
       }
       job.controller.abort()
     }
@@ -119,6 +128,7 @@ export class JobRunner {
     if (job.status !== 'queued') return false
 
     this.finish(job.id, 'cancelled', CANCELLED_MESSAGE)
+    this.log.info('jobs', 'Job cancelado por el usuario (estaba en cola)', { jobId: job.id, titleId: job.title_id, context: { tipo: job.tipo } })
     return true
   }
 
@@ -132,17 +142,25 @@ export class JobRunner {
     for (const job of this.deps.repos.jobs.list({ status: 'running' })) {
       if (job.attempts >= MAX_ATTEMPTS) {
         this.finish(job.id, 'error', INTERRUPTED_MESSAGE)
-        this.log.warn(`job ${job.id} abandonado tras ${job.attempts} intentos`)
+        this.log.error('jobs', `Job abandonado: interrumpido ${job.attempts} veces por cierres inesperados`, {
+          jobId: job.id,
+          titleId: job.title_id,
+          context: { tipo: job.tipo, attempts: job.attempts, lastStep: job.current_step, progress: job.progress }
+        })
         continue
       }
       this.deps.repos.jobs.update(job.id, { status: 'queued', progress: 0, current_step: null, started_at: null })
       this.deps.repos.titles.update(job.title_id, { status: 'queued' })
-      this.log.info(`job ${job.id} reencolado tras un cierre inesperado (intento ${job.attempts})`)
+      this.log.warn('jobs', `Job reencolado tras un cierre inesperado (intento ${job.attempts} de ${MAX_ATTEMPTS})`, {
+        jobId: job.id,
+        titleId: job.title_id,
+        context: { tipo: job.tipo, attempts: job.attempts, lastStep: job.current_step, progress: job.progress }
+      })
     }
   }
 
   private tick(): void {
-    if (this.stopping) return
+    if (!this.started || this.stopping) return
     while (this.running.size < this.concurrency()) {
       const next = this.deps.repos.jobs.nextQueued()
       if (!next) return
@@ -173,24 +191,66 @@ export class JobRunner {
     })!
     events.emit({ type: 'job.updated', job })
     events.emit({ type: 'title.updated', title: repos.titles.update(title.id, { status: 'processing', error: null })! })
-    this.log.info(`job ${job.id} (${job.tipo}) iniciado para "${title.name}"`)
 
     const config = parseJobConfig(job.config_json) as ReprocessConfig
+    const ref = { jobId: job.id, titleId: title.id }
+    const startedAt = Date.now()
+    const output = this.deps.jobOutput?.open(job.id)
+    this.log.info('jobs', `Job ${job.tipo} iniciado para «${title.name}» (intento ${job.attempts} de ${MAX_ATTEMPTS})`, {
+      ...ref,
+      context: {
+        tipo: job.tipo,
+        attempt: job.attempts,
+        sourcePath: title.source_path,
+        outputFolder: config.outputFolder,
+        standards: config.standards,
+        qualities: config.qualities,
+        segmentDurationSeconds: config.segmentDurationSeconds,
+        encoderPreference: config.encoder,
+        ...(config.audioIndexes?.length ? { audioIndexes: config.audioIndexes } : {}),
+        ...(config.subtitleIndexes?.length ? { subtitleIndexes: config.subtitleIndexes } : {}),
+        ...(config.externalTracks?.length ? { externalTracks: config.externalTracks } : {}),
+        ...(output ? { outputLog: this.deps.jobOutput!.path(job.id) } : {})
+      }
+    })
+
     let lastPersisted = -1
     let lastStep: string | null = null
+    let stepStartedAt = startedAt
+    let lastDecile = -1
+    const stepDurations: Record<string, number> = {}
+    const closeStep = (): void => {
+      if (lastStep) stepDurations[lastStep] = (stepDurations[lastStep] ?? 0) + (Date.now() - stepStartedAt)
+    }
     const hooks: PipelineHooks = {
       signal,
       onLog: (line) => {
-        this.log.debug(`[${job.id}] ${line}`)
+        output?.write(line)
         events.emit({ type: 'job.log', jobId: job.id, line })
       },
+      onEvent: (event) => this.log.log(event.level, 'pipeline', event.message, { ...ref, context: event.context ?? null }),
       onProgress: (event: ProgressEvent) => {
         // A dying process can still report once after abort/stop; the row is no longer ours
         if (signal.aborted || this.stopping) return
         const stepChanged = event.step !== lastStep
         if (!stepChanged && event.percent - lastPersisted < 0.5) return
+        if (stepChanged) {
+          closeStep()
+          if (lastStep) {
+            this.log.info('jobs', `Paso ${lastStep} terminado en ${formatDuration(stepDurations[lastStep]!)}; empieza ${event.step}`, {
+              ...ref,
+              context: { step: lastStep, ms: stepDurations[lastStep], next: event.step }
+            })
+          }
+          stepStartedAt = Date.now()
+        }
         lastPersisted = event.percent
         lastStep = event.step
+        const decile = Math.floor(event.percent / 10)
+        if (decile > lastDecile && event.percent < 100) {
+          lastDecile = decile
+          this.log.debug('jobs', `Progreso ${Math.round(event.percent)} % (${event.step})`, { ...ref, context: { percent: event.percent, step: event.step, stepPercent: event.stepPercent ?? null } })
+        }
         const updated = repos.jobs.update(job.id, { progress: event.percent, current_step: event.step })
         if (updated) events.emit({ type: 'job.progress', job: updated })
       }
@@ -244,13 +304,44 @@ export class JobRunner {
         recordIncremental(repos, this.deps.db, result)
       }
       this.finish(job.id, 'done', null)
-      this.log.info(`job ${job.id} completado → ${result.outputFolder}`)
+      closeStep()
+      const durationMs = Date.now() - startedAt
+      this.log.info('jobs', `Job ${job.tipo} completado en ${formatDuration(durationMs)} → ${result.outputFolder}`, {
+        ...ref,
+        context: {
+          outputFolder: result.outputFolder,
+          durationMs,
+          steps: stepDurations,
+          renditions: result.plan.renditions.map((r) => r.label),
+          audio: result.plan.audio.map(audioTrackId),
+          subtitles: result.plan.subtitles.map(subtitleTrackId),
+          skipped: result.plan.skipped
+        }
+      })
     } catch (error) {
       // stop() already re-queued the job; leave its row alone
       if (this.stopping) return
-      const message = signal.aborted ? CANCELLED_MESSAGE : error instanceof Error ? error.message : String(error)
-      this.finish(job.id, signal.aborted ? 'cancelled' : 'error', message)
-      this.log.error(`job ${job.id} ${signal.aborted ? 'cancelado' : 'falló'}: ${message}`)
+      const cancelled = signal.aborted
+      const message = cancelled ? CANCELLED_MESSAGE : error instanceof Error ? error.message : String(error)
+      this.finish(job.id, cancelled ? 'cancelled' : 'error', message)
+      const step = error instanceof PipelineError ? error.step : (lastStep ?? 'probe')
+      if (cancelled) {
+        this.log.info('jobs', `Job cancelado por el usuario durante ${step}`, { ...ref, context: { step, progress: Math.max(0, lastPersisted) } })
+      } else {
+        this.log.error('jobs', `Job ${job.tipo} falló en ${step}: ${describeFailure(error, message)}`, {
+          ...ref,
+          context: {
+            step,
+            progress: Math.max(0, lastPersisted),
+            durationMs: Date.now() - startedAt,
+            ...errorContext(error),
+            // The last lines ffmpeg / the packager printed, in order
+            output: output?.tail() ?? []
+          }
+        })
+      }
+    } finally {
+      output?.close()
     }
   }
 
@@ -262,14 +353,18 @@ export class JobRunner {
     hooks: PipelineHooks,
     attempt: (videoEncoder: VideoEncoderOptions) => Promise<PipelineResult>
   ): Promise<PipelineResult> {
-    this.log.info(`job ${job.id}: codificador ${encoderSpec(encoder).label}`)
+    const ref = { jobId: job.id, titleId: job.title_id }
+    this.log.info('jobs', `Codificador de video: ${encoderSpec(encoder).label}`, { ...ref, context: { encoder, hardware: isHardwareEncoder(encoder) } })
     try {
       return await attempt({ kind: encoder })
     } catch (error) {
       const ffmpegFailed = error instanceof ProcessError && error.command === this.deps.binaries.ffmpeg && !error.aborted
       if (!isHardwareEncoder(encoder) || !ffmpegFailed || hooks.signal?.aborted) throw error
       const reason = error.stderrTail.at(-1) ?? error.message
-      this.log.warn(`job ${job.id}: ${encoderSpec(encoder).label} falló (${reason}); reintentando por software`)
+      this.log.warn('jobs', `El codificador ${encoderSpec(encoder).label} falló (${reason}); se reintenta con libx264`, {
+        ...ref,
+        context: { encoder, exitCode: error.code, reason, stderrTail: error.stderrTail }
+      })
       hooks.onLog?.(`codificador ${encoderSpec(encoder).label} falló: ${reason}. Reintentando por software (libx264)`)
       return attempt({ kind: SOFTWARE_ENCODER })
     }
@@ -298,4 +393,13 @@ export class JobRunner {
           : repos.titles.update(job.title_id, { status: 'error', error: message })
     if (title) events.emit({ type: 'title.updated', title })
   }
+}
+
+// One readable line for the failure message; the full detail travels in the context
+function describeFailure(error: unknown, message: string): string {
+  if (error instanceof ProcessError) {
+    const last = error.stderrTail.at(-1)
+    return `${basename(error.command)} terminó con código ${error.code}${last ? `: ${last}` : ''}`
+  }
+  return message.split('\n')[0]!
 }

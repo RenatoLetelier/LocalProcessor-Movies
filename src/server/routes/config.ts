@@ -6,6 +6,7 @@ import { SEGMENT_DURATION_RANGE, validateConfig } from '@shared/config-validate'
 import { generateApiToken } from '../auth'
 import type { Repositories } from '../db/repositories'
 import type { ServerEvents } from '../jobs/events'
+import type { AppLogger } from '../logging/logger'
 
 const rungSchema = {
   type: 'object',
@@ -38,7 +39,7 @@ const configPatchSchema = {
   }
 } as const
 
-export const configRoutes: FastifyPluginAsync<{ repos: Repositories; events?: ServerEvents }> = async (app, { repos, events }) => {
+export const configRoutes: FastifyPluginAsync<{ repos: Repositories; events?: ServerEvents; log?: AppLogger }> = async (app, { repos, events, log }) => {
   app.get('/config', async (): Promise<AppConfig> => repos.settings.getConfig())
 
   app.put<{ Body: Partial<AppConfig> }>('/config', { schema: { body: configPatchSchema } }, async (request, reply) => {
@@ -58,18 +59,35 @@ export const configRoutes: FastifyPluginAsync<{ repos: Repositories; events?: Se
     }
 
     // The first time LAN access is enabled the token is minted along with it
-    if (merged.apiAccess === 'lan' && !merged.apiToken) patch.apiToken = generateApiToken()
+    const minted = merged.apiAccess === 'lan' && !merged.apiToken
+    if (minted) patch.apiToken = generateApiToken()
+    const previous = repos.settings.getConfig()
     const updated = repos.settings.updateConfig(patch)
     events?.emit({ type: 'config.updated', config: updated })
+    const changes = configChanges(previous, updated)
+    if (Object.keys(changes).length > 0) {
+      log?.info('config', `Configuración actualizada: ${Object.keys(changes).join(', ')}${minted ? ' (token de acceso generado)' : ''}`, { context: { changes, ip: request.ip } })
+    }
     return updated
   })
 
   // Replaces the token; whoever holds the old one loses access immediately
-  app.post('/config/api-token', async (): Promise<AppConfig> => {
+  app.post('/config/api-token', async (request): Promise<AppConfig> => {
     const updated = repos.settings.updateConfig({ apiToken: generateApiToken() })
     events?.emit({ type: 'config.updated', config: updated })
+    log?.info('config', 'Token de acceso desde la red regenerado; el anterior deja de valer', { context: { ip: request.ip } })
     return updated
   })
+}
+
+// Field-by-field diff for the log; the token itself never gets written
+function configChanges(before: AppConfig, after: AppConfig): Record<string, { from: unknown; to: unknown }> {
+  const changes: Record<string, { from: unknown; to: unknown }> = {}
+  for (const key of Object.keys(after) as (keyof AppConfig)[]) {
+    if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue
+    changes[key] = key === 'apiToken' ? { from: before[key] ? '(token)' : null, to: after[key] ? '(token nuevo)' : null } : { from: before[key], to: after[key] }
+  }
+  return changes
 }
 
 async function checkOutputFolder(folder: string): Promise<string[]> {

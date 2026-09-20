@@ -11,6 +11,8 @@ import { linkSource } from '../jobs/link-source'
 import { saveUpload, uploadPath } from '../jobs/uploads'
 import { readFolderTree } from '../jobs/folder-tree'
 import { enqueueReprocess, type ReprocessRequest } from '../jobs/reprocess'
+import { parseJobConfig } from '../jobs/config'
+import { formatBytes } from '../logging/format'
 
 interface CreateTitleBody {
   sourcePath?: unknown
@@ -21,14 +23,32 @@ interface CreateTitleBody {
 }
 
 export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = async (app, { context }) => {
-  const { repos, runner, events } = context
+  const { repos, runner, events, log } = context
 
   // JSON: { sourcePath, name?, standards?, qualities?, segmentDurationSeconds? }
   // multipart: file part "file" plus the same fields as text parts (lists comma-separated)
   app.post('/titles', async (request, reply) => {
-    const result = request.isMultipart() ? await createFromUpload(request) : await createFromPath(request)
+    const uploaded = request.isMultipart()
+    const { title, job } = uploaded ? await createFromUpload(request) : await createFromPath(request)
+    log.info('titles', `Título creado: «${title.name}»${uploaded ? ' (archivo subido por la API)' : ''}`, {
+      titleId: title.id,
+      jobId: job.id,
+      context: {
+        sourcePath: title.source_path,
+        sourceManaged: title.source_managed,
+        width: title.source_width,
+        height: title.source_height,
+        fps: title.source_fps,
+        codec: title.source_video_codec,
+        bitrate: title.source_video_bitrate,
+        hdr: title.source_hdr,
+        durationSeconds: title.duration_seconds,
+        outputFolder: title.output_folder
+      }
+    })
+    log.info('jobs', `Job inicial encolado para «${title.name}»`, { titleId: title.id, jobId: job.id, context: { tipo: job.tipo, ...jobConfigSummary(job.config_json) } })
     runner.notify()
-    return reply.code(201).send(result)
+    return reply.code(201).send({ title, job })
   })
 
   async function createFromPath(request: FastifyRequest): Promise<Awaited<ReturnType<typeof enqueueTitle>>> {
@@ -56,6 +76,8 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
         originalName = part.filename
         savedPath = uploadPath(config.outputFolder, titleId, part.filename)
         await saveUpload(part.file, savedPath)
+        const bytes = (await stat(savedPath)).size
+        log.info('titles', `Archivo recibido por la API: ${part.filename} (${formatBytes(bytes)})`, { titleId, context: { filename: part.filename, bytes, savedPath, ip: request.ip } })
       } else {
         ;(fields as Record<string, unknown>)[part.fieldname] = part.value
       }
@@ -83,14 +105,30 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     const { outputFolder } = repos.settings.getConfig()
     if (!outputFolder) throw new HttpError(409, 'Configura la carpeta de salida antes de importar')
     if (!(await stat(outputFolder).catch(() => undefined))?.isDirectory()) throw new HttpError(409, `La carpeta de salida no existe: ${outputFolder}`)
-    return importOutputFolder({ db: context.db, repos, events }, outputFolder)
+    const summary = await importOutputFolder({ db: context.db, repos, events }, outputFolder)
+    log.log(summary.skipped.length ? 'warn' : 'info', 'titles', `Carpeta de salida revisada: ${summary.imported.length} título(s) importado(s), ${summary.relinked.length} revinculado(s), ${summary.skipped.length} carpeta(s) omitida(s)`, {
+      context: {
+        folder: outputFolder,
+        imported: summary.imported.map((t) => ({ id: t.id, name: t.name, sourcePath: t.source_path })),
+        relinked: summary.relinked.map((t) => ({ id: t.id, name: t.name, outputFolder: t.output_folder })),
+        skipped: summary.skipped
+      }
+    })
+    return summary
   })
 
   // Attaches the source file to a title (imported titles have none until then)
   app.put<{ Params: { id: string }; Body: { sourcePath: string } }>(
     '/titles/:id/source',
     { schema: { body: { type: 'object', required: ['sourcePath'], additionalProperties: false, properties: { sourcePath: { type: 'string', minLength: 1 } } } } },
-    async (request) => linkSource(context, request.params.id, request.body.sourcePath)
+    async (request) => {
+      const title = await linkSource(context, request.params.id, request.body.sourcePath)
+      log.info('titles', `Archivo de origen vinculado a «${title.name}»`, {
+        titleId: title.id,
+        context: { sourcePath: title.source_path, width: title.source_width, height: title.source_height, fps: title.source_fps, codec: title.source_video_codec, hdr: title.source_hdr, durationSeconds: title.duration_seconds }
+      })
+      return title
+    }
   )
 
   app.get<{ Params: { id: string } }>('/titles/:id', async (request) => {
@@ -116,11 +154,19 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     const title = repos.titles.get(request.params.id)
     if (!title) throw notFound('Título no encontrado')
 
+    const jobs = repos.jobs.listByTitle(title.id)
+    const cancelled = jobs.filter((j) => j.status === 'queued' || j.status === 'running').map((j) => j.id)
     await runner.cancelForTitle(title.id)
     await rm(title.output_folder, { recursive: true, force: true })
-    if (title.source_managed && title.source_path) await rm(title.source_path, { force: true })
+    const uploadRemoved = title.source_managed && !!title.source_path
+    if (uploadRemoved) await rm(title.source_path!, { force: true })
     repos.titles.remove(title.id)
+    context.jobOutput?.remove(jobs.map((j) => j.id))
     events.emit({ type: 'title.deleted', titleId: title.id })
+    log.info('titles', `Título eliminado: «${title.name}»`, {
+      titleId: title.id,
+      context: { outputFolder: title.output_folder, sourcePath: title.source_path, uploadRemoved, cancelledJobs: cancelled, jobsRemoved: jobs.length }
+    })
     return reply.code(204).send()
   })
 
@@ -131,10 +177,21 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     { schema: { body: reprocessSchema } },
     async (request, reply) => {
       const result = await enqueueReprocess(context, request.params.id, request.body)
+      log.info('jobs', `Job ${result.job.tipo} encolado para «${result.title.name}»`, {
+        titleId: result.title.id,
+        jobId: result.job.id,
+        context: { tipo: result.job.tipo, request: request.body, ...jobConfigSummary(result.job.config_json) }
+      })
       runner.notify()
       return reply.code(202).send(result)
     }
   )
+}
+
+// The parts of a job's frozen config worth reading in the log
+function jobConfigSummary(configJson: string): Record<string, unknown> {
+  const { rungs: _rungs, ...rest } = parseJobConfig(configJson)
+  return rest
 }
 
 const reprocessSchema = {

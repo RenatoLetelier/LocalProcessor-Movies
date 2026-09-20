@@ -38,12 +38,14 @@ const ENDPOINTS: { method: string; path: string; description: string }[] = [
   { method: 'POST', path: '/titles/import', description: 'Importa los títulos publicados en la carpeta de salida que no estén en la biblioteca' },
   { method: 'GET', path: '/jobs', description: 'Jobs activos; ?status=all para el historial completo' },
   { method: 'GET', path: '/jobs/:id', description: 'Estado y progreso de un job' },
+  { method: 'GET', path: '/jobs/:id/log', description: 'Salida completa de ffmpeg y del empaquetador del job (texto)' },
   { method: 'POST', path: '/jobs/:id/cancel', description: 'Cancela un job en cola o en curso' },
   { method: 'WS', path: '/jobs/stream', description: 'Eventos en tiempo real (job.progress, job.updated, title.updated…)' },
   { method: 'GET', path: '/config', description: 'Configuración actual (estándares, calidades, segmentos, codificador)' },
   { method: 'PUT', path: '/config', description: 'Actualiza la configuración' },
   { method: 'POST', path: '/config/api-token', description: 'Regenera el token de acceso desde la red (revoca el anterior)' },
   { method: 'GET', path: '/system', description: 'Codificadores detectados, concurrencia, dirección de escucha e IPs del equipo' },
+  { method: 'GET', path: '/logs', description: 'Registro de acciones: ?level=&category=&jobId=&titleId=&q=&before=&limit=&format=text' },
   { method: 'GET', path: '/health', description: 'Versión de la aplicación' }
 ]
 
@@ -378,6 +380,9 @@ export function Api() {
           </li>
           <li>
             <code>config.updated</code> — la configuración cambió.
+          </li>
+          <li>
+            <code>log.entry</code> — nueva entrada del registro de acciones (la misma que devuelve <code>GET /logs</code>).
           </li>
         </ul>
         <CodeBlock

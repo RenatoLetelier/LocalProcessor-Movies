@@ -1,5 +1,5 @@
 import type { AppConfig } from './config'
-import type { AudioTrack, Job, Rendition, SubtitleTrack, Title } from './model'
+import type { AudioTrack, Job, LogEntry, Rendition, SubtitleTrack, Title } from './model'
 
 export interface HealthResponse {
   status: 'ok'
@@ -57,6 +57,7 @@ export type ServerEvent =
   | { type: 'title.deleted'; titleId: string }
   | { type: 'job.log'; jobId: string; line: string }
   | { type: 'config.updated'; config: AppConfig }
+  | { type: 'log.entry'; entry: LogEntry }
 
 export interface ReprocessFile {
   path: string

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { AppConfig } from '@shared/config'
-import type { Job, Title } from '@shared/model'
+import type { Job, LogEntry, Title } from '@shared/model'
 
 // Everything the UI (and any WS client) can observe. Also the WS wire format.
 export type ServerEvent =
@@ -10,6 +10,7 @@ export type ServerEvent =
   | { type: 'title.deleted'; titleId: string }
   | { type: 'job.log'; jobId: string; line: string }
   | { type: 'config.updated'; config: AppConfig }
+  | { type: 'log.entry'; entry: LogEntry }
 
 export type EventListener = (event: ServerEvent) => void
 

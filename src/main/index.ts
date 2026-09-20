@@ -8,6 +8,9 @@ import { startServer, type ServerOptions } from '@server/index'
 import { DB_FILE_NAME, openDatabase, type AppDatabase } from '@server/db'
 import { ServerEvents } from '@server/jobs/events'
 import { JobRunner } from '@server/jobs/runner'
+import { FileSink } from '@server/logging/file-sink'
+import { JobOutputStore } from '@server/logging/job-output'
+import { AppLogger, errorContext } from '@server/logging/logger'
 import { resolveBinaries } from '@pipeline/binaries'
 import { detectHardware } from '@pipeline/hardware'
 import { adoptLegacyDataDir } from './data-dir'
@@ -22,6 +25,7 @@ const apiBaseUrl = `http://${DEFAULT_API_HOST}:${apiPort}`
 let database: AppDatabase | undefined
 let server: FastifyInstance | undefined
 let runner: JobRunner | undefined
+let log: AppLogger | undefined
 let shuttingDown = false
 
 // One running instance: the API port is fixed and SQLite has a single writer
@@ -56,42 +60,50 @@ async function main(): Promise<void> {
   setupMenu()
 
   const dataDir = process.env.LP_DATA_DIR || app.getPath('userData')
+  const logsDir = join(dataDir, 'logs')
+  // The text log exists before anything else can fail; the table joins once the database is open
+  log = new AppLogger({ file: new FileSink(join(logsDir, 'app.log')), echo: is.dev ? (line) => console.log(line) : undefined })
+  log.info('app', `Arrancando ${APP_NAME} ${app.getVersion()}`, {
+    context: { dataDir, platform: process.platform, arch: process.arch, electron: process.versions.electron, node: process.versions.node, dev: is.dev }
+  })
+  process.on('uncaughtException', (error) => log?.error('app', `Excepción no capturada: ${error.message}`, { context: errorContext(error) }))
+  process.on('unhandledRejection', (reason) => {
+    log?.error('app', `Promesa rechazada sin capturar: ${reason instanceof Error ? reason.message : String(reason)}`, { context: errorContext(reason) })
+  })
+
   const adopted = !process.env.LP_DATA_DIR && adoptLegacyDataDir(dataDir)
+  if (adopted) log.warn('app', 'Base de datos copiada desde la carpeta de LocalProcessor 1.0 (primer arranque con el nombre nuevo)', { context: { dataDir } })
   database = openDatabase(join(dataDir, DB_FILE_NAME))
+  const events = new ServerEvents()
+  log.attachStore(database.repos.logs, events)
+  if (database.migrationsApplied.length > 0) {
+    log.info('app', `Migraciones de la base de datos aplicadas: ${database.migrationsApplied.join(', ')}`, { context: { versions: database.migrationsApplied } })
+  }
+  const jobOutput = new JobOutputStore(join(logsDir, 'jobs'))
+  const prunedOutputs = jobOutput.prune()
+  if (prunedOutputs > 0) log.debug('app', `Salidas de ffmpeg antiguas eliminadas: ${prunedOutputs}`, { context: { dir: jobOutput.dir } })
 
   const resourcesDir = is.dev ? join(app.getAppPath(), 'resources') : process.resourcesPath
   const binaries = resolveBinaries({ resourcesDir })
+  log.info('app', 'Binarios localizados', { context: { ...binaries } })
 
   // A one-second test encode per candidate: what ffmpeg lists is not what the drivers can do
   const hardware = await detectHardware(binaries)
-
-  const events = new ServerEvents()
-  // The runner logs through the Fastify logger, which exists only after startServer
-  runner = new JobRunner({
-    db: database.db,
-    repos: database.repos,
-    events,
-    binaries,
-    hardware,
-    log: {
-      info: (msg) => server?.log.info(msg),
-      warn: (msg) => server?.log.warn(msg),
-      error: (msg) => server?.log.error(msg),
-      debug: (msg) => server?.log.debug(msg)
-    }
+  const available = hardware.encoders.filter((e) => e.available)
+  log.info('app', `Codificadores disponibles: ${available.map((e) => e.label).join(', ') || 'ninguno'}; se usará ${hardware.encoders.find((e) => e.kind === hardware.preferred)?.label ?? hardware.preferred}`, {
+    context: { platform: hardware.platform, cpuThreads: hardware.cpuThreads, preferred: hardware.preferred, encoders: hardware.encoders }
   })
+
+  runner = new JobRunner({ db: database.db, repos: database.repos, events, binaries, hardware, log, jobOutput })
   const serverOptions: Omit<ServerOptions, 'host'> = {
     port: apiPort,
     version: app.getVersion(),
-    context: { db: database.db, repos: database.repos, events, runner, binaries, hardware },
+    context: { db: database.db, repos: database.repos, events, runner, log, jobOutput, binaries, hardware },
     allowedOrigins: [rendererOrigin()],
     logLevel: is.dev ? 'info' : 'warn'
   }
   const listener = new ApiListener(serverOptions)
   server = await listener.start(apiHostFor(database.repos.settings.getConfig()))
-  server.log.info({ node: process.versions.node, electron: process.versions.electron, dataDir, binaries }, 'runtime')
-  if (adopted) server.log.warn({ dataDir }, 'base de datos copiada desde la carpeta de LocalProcessor 1.0')
-  server.log.info({ encoders: hardware.encoders.map((e) => `${e.kind}:${e.available ? 'ok' : e.error}`), preferred: hardware.preferred }, 'hardware')
   events.subscribe((event) => {
     if (event.type === 'config.updated') listener.switchTo(apiHostFor(event.config))
   })
@@ -123,6 +135,7 @@ class ApiListener {
   async start(host: string): Promise<FastifyInstance> {
     server = await startServer({ ...this.options, host })
     this.host = host
+    log?.info('app', `API escuchando en ${host}:${apiPort}${host === LAN_API_HOST ? ' (acceso desde la red local activado)' : ''}`, { context: { host, port: apiPort } })
     return server
   }
 
@@ -135,16 +148,14 @@ class ApiListener {
         const previous = server
         server = undefined
         await previous?.close()
-        let next: FastifyInstance
         try {
-          next = await this.start(host)
+          await this.start(host)
         } catch (error) {
-          next = await this.start(DEFAULT_API_HOST)
-          next.log.error({ err: error, host }, 'no se pudo escuchar en la red local; la API sigue solo en 127.0.0.1')
+          log?.error('app', `No se pudo escuchar en ${host}:${apiPort}; la API sigue solo en ${DEFAULT_API_HOST}`, { context: { host, ...errorContext(error) } })
+          await this.start(DEFAULT_API_HOST)
         }
-        next.log.info({ host: this.host, port: apiPort }, 'api listening')
       })
-      .catch((error: unknown) => console.error('No se pudo cambiar la dirección de la API:', error))
+      .catch((error: unknown) => log?.error('app', 'No se pudo cambiar la dirección de la API', { context: errorContext(error) }))
   }
 }
 
@@ -166,6 +177,7 @@ function openWindow(): void {
 }
 
 async function shutdown(): Promise<void> {
+  log?.info('app', 'Cerrando la aplicación', { context: { runningJobs: runner?.hasRunning() ?? false } })
   await runner?.stop()
   await server?.close()
   database?.close()
@@ -182,6 +194,7 @@ function setupMenu(): void {
 
 function fatal(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
+  log?.error('app', `No se pudo iniciar la aplicación: ${message}`, { context: errorContext(error) })
   dialog.showErrorBox(APP_NAME, `No se pudo iniciar la aplicación:\n\n${message}`)
   app.exit(1)
 }

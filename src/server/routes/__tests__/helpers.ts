@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { FastifyInstance } from 'fastify'
@@ -11,6 +12,8 @@ import { openDatabase, type AppDatabase } from '../../db'
 import { ServerEvents } from '../../jobs/events'
 import { JobRunner, type IncrementalFn, type PipelineFn } from '../../jobs/runner'
 import type { Prober } from '../../jobs/enqueue'
+import { AppLogger } from '../../logging/logger'
+import { JobOutputStore } from '../../logging/job-output'
 
 export const FAKE_BINARIES: Binaries = { ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', packager: 'packager' }
 
@@ -168,6 +171,8 @@ export interface TestServer {
   db: AppDatabase
   events: ServerEvents
   runner: JobRunner
+  log: AppLogger
+  jobOutput: JobOutputStore
   allowedOrigins: string[]
 }
 
@@ -176,6 +181,9 @@ export async function createTestServer(
 ): Promise<TestServer> {
   const db = openDatabase(':memory:')
   const events = new ServerEvents()
+  const log = new AppLogger()
+  log.attachStore(db.repos.logs, events)
+  const jobOutput = new JobOutputStore(mkdtempSync(join(tmpdir(), 'lp-job-logs-')))
   const runner = new JobRunner({
     db: db.db,
     repos: db.repos,
@@ -185,22 +193,27 @@ export async function createTestServer(
     incremental: options.incremental ?? fakeIncremental(),
     // Tests run one job at a time unless they ask for hardware-derived concurrency
     concurrency: options.hardware ? undefined : (options.concurrency ?? 1),
-    hardware: options.hardware ?? null
+    hardware: options.hardware ?? null,
+    log,
+    jobOutput
   })
   if (options.outputFolder) db.repos.settings.updateConfig({ outputFolder: options.outputFolder })
+  // As in production: recovery first, then the routes may notify()
+  runner.start()
 
   const allowedOrigins = ['app://renderer']
   const app = await createServer({
     host: '127.0.0.1',
     port: 0,
     version: 'test',
-    context: { db: db.db, repos: db.repos, events, runner, binaries: FAKE_BINARIES, hardware: options.hardware ?? null, probe: options.probe ?? fakeProbe, probeTracks: fakeProbeTracks, checkDiskSpace: false },
+    context: { db: db.db, repos: db.repos, events, runner, log, jobOutput, binaries: FAKE_BINARIES, hardware: options.hardware ?? null, probe: options.probe ?? fakeProbe, probeTracks: fakeProbeTracks, checkDiskSpace: false },
     allowedOrigins,
     logLevel: 'silent'
   })
   app.addHook('onClose', async () => {
     await runner.stop()
     db.close()
+    rmSync(jobOutput.dir, { recursive: true, force: true })
   })
-  return { app, db, events, runner, allowedOrigins }
+  return { app, db, events, runner, log, jobOutput, allowedOrigins }
 }

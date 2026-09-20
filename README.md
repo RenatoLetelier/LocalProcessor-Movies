@@ -145,6 +145,11 @@ La aplicación guarda su base de datos y configuración en:
 | macOS | `~/Library/Application Support/LocalProcessor-Movies` |
 | Linux | `~/.config/LocalProcessor-Movies` |
 
+Dentro de esa carpeta, `logs/app.log` es el registro de todo lo que hace la
+aplicación (rotado a 10 MB, tres archivos) y `logs/jobs/<jobId>.log` guarda la
+salida completa de ffmpeg y del Packager de cada job (se conservan los últimos
+200). El mismo registro se consulta desde la API (`GET /logs`).
+
 Hasta la versión 1.0.0 la aplicación se llamaba *LocalProcessor* y usaba la
 carpeta `LocalProcessor` del mismo sitio: la primera vez que arranca la versión
 renombrada copia esa base de datos, así que la biblioteca se conserva. La
@@ -450,6 +455,7 @@ mensaje JSON por evento:
 | `title.deleted` | `titleId` | Un título se eliminó. |
 | `job.log` | `jobId`, `line` | Líneas de ffmpeg y del empaquetador (diagnóstico). |
 | `config.updated` | `config` | La configuración cambió. |
+| `log.entry` | `entry` | Nueva entrada del registro de acciones (ver [6.6](#66-registro-de-acciones)). |
 
 Desde otra máquina el token va en la URL (`?token=<token>`), porque un
 WebSocket no admite cabeceras. Si el archivo es muy corto, el job puede terminar
@@ -670,6 +676,7 @@ function esperarJob(jobId) {
 | `POST` | `/titles/import` | — | `200 { imported[], relinked[], skipped[] }` |
 | `GET` | `/jobs` | `?status=queued,running` (por defecto, los activos) o `?status=all` | `200 Job[]` |
 | `GET` | `/jobs/:id` | — | `200 Job` |
+| `GET` | `/jobs/:id/log` | — | `200 text/plain` con la salida completa de ffmpeg y del Packager del job (`404` si no la hay) |
 | `POST` | `/jobs/:id/cancel` | — | `202 Job` |
 | `WS` | `/jobs/stream` | — | `snapshot` y luego un evento JSON por mensaje |
 | `GET` | `/config` | — | `200 Config` |
@@ -677,6 +684,7 @@ function esperarJob(jobId) {
 | `POST` | `/config/api-token` | — | `200 Config` con el token nuevo |
 | `GET` | `/system` | — | `200 { platform, cpuThreads, encoders[], selectedEncoder, concurrency, listening, lanAddresses }` |
 | `GET` | `/health` | — | `200 { status, app, version, uptimeSeconds }` |
+| `GET` | `/logs` | `?level=&category=&jobId=&titleId=&q=&before=&limit=&format=` | `200 LogEntry[]` (o `text/plain` con `format=text`) |
 
 ### 6.3 Objetos
 
@@ -725,6 +733,12 @@ archivos externos), `source_path`, `language`, `title`, `codec_origen`,
 Estos registros tienen su propio `id` interno; el enlace con las carpetas de
 `metadata.json` es `source_index` + idioma + códec.
 
+**LogEntry** (`GET /logs`, evento `log.entry`): `id` (entero creciente), `ts`
+(ISO-8601), `level` (`debug`, `info`, `warn`, `error`), `category` (`app`,
+`api`, `config`, `titles`, `jobs`, `pipeline`), `message`, `job_id`,
+`title_id` y `context` (objeto con el detalle: rutas, tamaños, comandos, el
+error con su traza y las últimas líneas de ffmpeg cuando un job falla).
+
 ### 6.4 Configuración
 
 `GET /config` devuelve el objeto completo; `PUT /config` acepta cualquier
@@ -751,6 +765,28 @@ Los cambios se aplican a los jobs que se encolen a partir de ese momento.
 | `LP_API_PORT` | Puerto de la API (por defecto `4700`). |
 | `LP_DATA_DIR` | Carpeta de la base de datos (por defecto, la carpeta de datos del usuario). |
 | `LP_FFMPEG`, `LP_FFPROBE`, `LP_PACKAGER` | Rutas a binarios propios en lugar de los incluidos. |
+
+### 6.6 Registro de acciones
+
+Todo lo que la aplicación hace queda registrado, con detalle suficiente para
+reconstruir qué ocurrió cuando algo falla:
+
+| Categoría | Qué registra |
+|---|---|
+| `app` | Arranque (versión, carpeta de datos, binarios, codificadores detectados y por qué no está disponible cada uno), migraciones, dirección en la que escucha la API, cierre, excepciones no capturadas. |
+| `api` | Cada petición que cambia algo (método, ruta, IP, resultado, duración y cuerpo, sin el token) y cada petición rechazada, con el motivo. Las consultas `GET` correctas no se registran. |
+| `config` | Cada campo cambiado, con el valor anterior y el nuevo; el token nunca se escribe. |
+| `titles` | Título creado, archivo subido, importación de la carpeta, origen vinculado, título eliminado (con las rutas). |
+| `jobs` | Encolado, inicio (codificador, intento), cada paso con su duración, avance cada 10 % (`debug`), fin con carpeta y tamaño, cancelación, reintento por software, reencolado tras un cierre inesperado; los fallos llevan el paso, el error con su traza, el código de salida y las últimas 200 líneas de ffmpeg. |
+| `pipeline` | Lo que ffprobe encontró (pistas, HDR, bitrate), el plan (calidades generadas y omitidas con el motivo, pistas copiadas o convertidas, subtítulos descartados), los comandos exactos de ffmpeg y del Packager (`debug`), lo codificado con sus tamaños y lo publicado. |
+
+`GET /logs` devuelve las entradas más recientes que cumplen el filtro, en orden
+cronológico: `level` es el nivel mínimo (`info` por defecto en la interfaz;
+`debug` incluye comandos y avance), `category`, `jobId` y `titleId` acotan,
+`q` busca en el mensaje y el contexto, `before=<id>` pagina hacia el pasado y
+`limit` (1–1000, 200 por defecto) fija el tamaño. `format=text` entrega las
+mismas líneas que `app.log`. La tabla conserva las últimas 50 000 entradas; el
+WebSocket emite cada entrada nueva como `log.entry`.
 
 ---
 

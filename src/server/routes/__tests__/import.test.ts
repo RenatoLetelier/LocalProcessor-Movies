@@ -95,7 +95,7 @@ describe('POST /titles/import', () => {
     mkdirSync(join(root, '.tmp', 'abc'), { recursive: true })
     mkdirSync(join(root, 'Otra carpeta'))
     const events: ServerEvent[] = []
-    server.events.subscribe((e) => events.push(e))
+    server.events.subscribe((e) => e.type !== 'log.entry' && events.push(e))
 
     const summary = await importTitles()
     expect(summary.imported.map((t) => t.name)).toEqual(['Current', 'Legacy'])
@@ -227,7 +227,7 @@ describe('PUT /titles/:id/source', () => {
   it('links the file, records what the probe found and makes reprocessing possible again', async () => {
     writeFileSync(join(root, 'movie.mkv'), 'source bytes')
     const events: ServerEvent[] = []
-    server.events.subscribe((e) => events.push(e))
+    server.events.subscribe((e) => e.type !== 'log.entry' && events.push(e))
 
     const res = await link(ID_A, join(root, 'movie.mkv'))
     expect(res.statusCode).toBe(200)

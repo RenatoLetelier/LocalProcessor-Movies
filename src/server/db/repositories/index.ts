@@ -9,6 +9,7 @@ import {
   type SubtitleTracksRepository
 } from './tracks'
 import { createJobsRepository, type JobsRepository } from './jobs'
+import { createLogsRepository, type LogsRepository } from './logs'
 
 export interface Repositories {
   settings: SettingsRepository
@@ -17,6 +18,7 @@ export interface Repositories {
   audioTracks: AudioTracksRepository
   subtitleTracks: SubtitleTracksRepository
   jobs: JobsRepository
+  logs: LogsRepository
 }
 
 export function createRepositories(db: DatabaseSync): Repositories {
@@ -26,6 +28,7 @@ export function createRepositories(db: DatabaseSync): Repositories {
     renditions: createRenditionsRepository(db),
     audioTracks: createAudioTracksRepository(db),
     subtitleTracks: createSubtitleTracksRepository(db),
-    jobs: createJobsRepository(db)
+    jobs: createJobsRepository(db),
+    logs: createLogsRepository(db)
   }
 }

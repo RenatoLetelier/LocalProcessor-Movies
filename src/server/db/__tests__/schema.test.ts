@@ -5,7 +5,8 @@ import { runMigrations } from '../migrate'
 import { migrations } from '../migrations'
 
 function tableNames(db: ReturnType<typeof openDatabase>['db']): string[] {
-  return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map(
+  // sqlite_sequence is SQLite's own bookkeeping for AUTOINCREMENT (the logs table)
+  return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(
     (r) => r.name
   )
 }
@@ -16,6 +17,7 @@ describe('schema', () => {
     expect(tableNames(db)).toEqual([
       'audio_tracks',
       'jobs',
+      'logs',
       'renditions',
       'schema_migrations',
       'settings',
@@ -28,7 +30,7 @@ describe('schema', () => {
     const { db } = openDatabase(':memory:')
     expect(runMigrations(db)).toEqual([])
     const versions = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()
-    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }])
+    expect(versions).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }])
   })
 
   it('makes source_path nullable in migration 6 without losing rows or the cascades', () => {
@@ -43,7 +45,7 @@ describe('schema', () => {
       INSERT INTO jobs (id, title_id, tipo, status, config_json, created_at) VALUES ('j1', 't1', 'inicial', 'done', '{}', 'now');
     `)
 
-    expect(runMigrations(db)).toEqual([6])
+    expect(runMigrations(db)).toEqual([6, 7])
     expect(db.prepare('SELECT source_path FROM titles WHERE id = ?').get('t1')).toEqual({ source_path: 'C:/in/movie.mkv' })
     expect(db.prepare('SELECT count(*) AS n FROM renditions').get()).toEqual({ n: 1 })
     expect(db.prepare('SELECT count(*) AS n FROM jobs').get()).toEqual({ n: 1 })

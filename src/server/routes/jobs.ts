@@ -30,6 +30,15 @@ export const jobsRoutes: FastifyPluginAsync<{ context: ServerContext; allowedOri
     return job
   })
 
+  // Everything ffmpeg and the packager printed while the job ran, as plain text
+  app.get<{ Params: { id: string } }>('/jobs/:id/log', async (request, reply) => {
+    const job = repos.jobs.get(request.params.id)
+    if (!job) throw notFound('Job no encontrado')
+    const text = context.jobOutput?.read(job.id) ?? null
+    if (text === null) throw notFound('Este job no tiene salida registrada')
+    return reply.type('text/plain; charset=utf-8').send(text)
+  })
+
   app.post<{ Params: { id: string } }>('/jobs/:id/cancel', async (request, reply) => {
     const job = repos.jobs.get(request.params.id)
     if (!job) throw notFound('Job no encontrado')

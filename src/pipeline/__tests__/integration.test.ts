@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DEFAULT_CONFIG } from '@shared/config'
-import { ProcessError, addToTitle, processTitle, resolveBinaries, type Binaries, type ProgressEvent } from '..'
+import { ProcessError, addToTitle, processTitle, resolveBinaries, type Binaries, type PipelineLogEvent, type ProgressEvent } from '..'
 import { run } from '../exec'
 import { extractSubtitles } from '../ffmpeg'
 import { probeSource } from '../probe'
@@ -25,6 +25,7 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
   const titleId = '00000000-0000-4000-8000-000000000001'
   const events: ProgressEvent[] = []
   const logs: string[] = []
+  const described: PipelineLogEvent[] = []
   let outputFolder: string
 
   beforeAll(async () => {
@@ -40,7 +41,7 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
         plan: { rungs: DEFAULT_CONFIG.rungs, qualities: DEFAULT_CONFIG.qualities, segmentDurationSeconds: 2 },
         videoEncoder: { preset: 'veryfast' }
       },
-      { onProgress: (e) => events.push(e), onLog: (l) => logs.push(l) }
+      { onProgress: (e) => events.push(e), onLog: (l) => logs.push(l), onEvent: (e) => described.push(e) }
     )
     outputFolder = result.outputFolder
   }, 120_000)
@@ -375,6 +376,27 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
     })
     setTimeout(() => controller.abort(), 200)
     await expect(pending).rejects.toMatchObject({ name: 'ProcessError', aborted: true })
+  })
+
+  it('describes what it found, decided and produced through onEvent', () => {
+    const messages = described.map((e) => `${e.level}: ${e.message}`)
+    expect(messages[0]).toMatch(/^info: Origen analizado: 1920×800 h264 a 23\.976 fps, [\d,]+ Mbps \(estimado\), 0 min 06 s, 3 pista\(s\) de audio, 2 subtítulo\(s\)$/)
+    expect(described[0]!.context).toMatchObject({ video: { codec: 'h264', displayWidth: 1920, displayHeight: 800, hdr: null } })
+    expect((described[0]!.context!.audio as unknown[]).length).toBe(3)
+    expect(messages).toContainEqual(expect.stringMatching(/^info: Plan: 3 calidad\(es\) \[1080p 1920×800 ≤\d+ kbps; 720p 1280×534 ≤\d+ kbps; 480p 854×356 ≤\d+ kbps\], 4 pista\(s\) de audio de salida \[1_es_aac aac copiado 2ch; 2_en_aac dts → aac 6ch; 3_fr_ac3 ac3 copiado 2ch; 3_fr_aac ac3 → aac 2ch\], 2 subtítulo\(s\) \[4_es subrip; 5_en ass forzado\]; segmentos de 2\.002 s$/))
+    expect(messages).toContainEqual(expect.stringMatching(/^warn: Omitido: calidad 2160p \(el origen .* sería upscaling\)$/))
+    expect(messages).toContainEqual(expect.stringMatching(/^info: Subtítulos convertidos a WebVTT: /))
+    expect(messages).toContainEqual(expect.stringMatching(/^debug: Comando ffmpeg: ffmpeg .*-filter_complex/))
+    expect(messages).toContainEqual(expect.stringMatching(/^info: Codificación terminada: \d+ archivo\(s\), [\d,]+ (KB|MB)$/))
+    expect(messages).toContainEqual(expect.stringMatching(/^debug: Comando packager: packager /))
+    expect(messages).toContainEqual(expect.stringMatching(/^info: Empaquetado terminado: \d+ flujo\(s\) en HLS \+ DASH, ~\d+ segmentos$/))
+    expect(messages[messages.length - 1]).toMatch(/^info: Publicado en .* \([\d,]+ (KB|MB)\)$/)
+    const published = described[described.length - 1]!.context!
+    expect(published).toMatchObject({ outputFolder, replaced: false, standards: ['hls', 'dash'], manifests: { hls: 'master.m3u8', dash: 'manifest.mpd' } })
+    expect(published.bytes as number).toBeGreaterThan(100_000)
+    const encoded = described.find((e) => e.message.startsWith('Codificación terminada'))!.context!.files as { stream: string; bytes: number }[]
+    expect(encoded.map((f) => f.stream)).toEqual(expect.arrayContaining(['1080p', '720p', '480p']))
+    expect(encoded.every((f) => f.bytes > 0)).toBe(true)
   })
 
   it('reports monotonic progress through every step', () => {

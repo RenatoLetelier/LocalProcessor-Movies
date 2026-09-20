@@ -100,6 +100,21 @@ describe('JobRunner', () => {
     await runner.stop()
   })
 
+  it('ignores notify() until start() has run the recovery, so a job never runs twice', async () => {
+    await touch('early')
+    const early = await enqueue('early')
+    const runner = makeRunner(fakePipeline({ ticks: 2 }))
+
+    runner.notify()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(db.repos.jobs.get(early.jobId)?.status).toBe('queued')
+
+    runner.start()
+    const done = await untilJob(early.jobId, 'done')
+    expect(done.attempts).toBe(1)
+    await runner.stop()
+  })
+
   it('marks job and title as error when the pipeline fails', async () => {
     await touch('bad')
     const { jobId, titleId } = await enqueue('bad')

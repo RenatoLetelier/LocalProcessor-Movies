@@ -75,7 +75,7 @@ describe('token lifecycle', () => {
   it('regenerates on POST /config/api-token and revokes the previous one', async () => {
     const token = await enableLan()
     const events: string[] = []
-    server.events.subscribe((e) => events.push(e.type))
+    server.events.subscribe((e) => e.type !== 'log.entry' && events.push(e.type))
 
     const res = await server.app.inject({ method: 'POST', url: '/config/api-token' })
     expect(res.statusCode).toBe(200)

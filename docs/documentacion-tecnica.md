@@ -133,6 +133,8 @@ Notas:
 | PUT | `/config` | Actualiza configuración |
 | POST | `/config/api-token` | Regenera el token de acceso desde la red |
 | GET | `/system` | Codificadores detectados, concurrencia, dirección en la que escucha la API y IPs de red del equipo |
+| GET | `/logs` | Registro de acciones: filtros `level` (mínimo), `category`, `jobId`, `titleId`, `q`, paginación `before`/`limit`, `format=text` |
+| GET | `/jobs/:id/log` | Salida completa de ffmpeg / Shaka Packager del job, en texto |
 
 La API escucha únicamente en `127.0.0.1` por defecto — no expone el servicio a la red salvo que el usuario lo habilite explícitamente (`apiAccess: "lan"`, ver §12).
 
@@ -242,6 +244,13 @@ El bloque `source` y los campos `sourceIndex`/`sourceCodec`/`sourceFormat` hacen
 - Cada job escribe su resultado en una carpeta temporal; solo se mueve/renombra a la ubicación final al completarse exitosamente.
 - Si un job falla a mitad de camino, la carpeta temporal se descarta — el contenido final publicado nunca queda en un estado parcial o corrupto.
 - Antes de encolar un job, se valida espacio en disco suficiente para las renditions configuradas.
+
+## 11 bis. Registro de acciones
+
+- Tabla `logs` (migración 007): `ts`, `level` (`debug|info|warn|error`), `category` (`app|api|config|titles|jobs|pipeline`), `message`, `job_id`, `title_id`, `context` (JSON). Se conservan las últimas 50 000 entradas; el `id` es `AUTOINCREMENT` para que la paginación hacia atrás (`before`) no se vea afectada por la poda.
+- `AppLogger` (`src/server/logging/`) escribe cada entrada en `<datos>/logs/app.log` (rotación 10 MB × 3) desde el primer instante del arranque, antes de abrir la base de datos; las entradas previas se vuelcan a la tabla al abrirla. Cada entrada guardada se emite por el WebSocket como `log.entry`.
+- La salida completa de ffmpeg y del Packager va a `<datos>/logs/jobs/<jobId>.log` (últimos 200 jobs; se borra con el título). Al fallar un job, la entrada de error incluye el paso, el error con su traza y las últimas 200 líneas de esa salida.
+- Fuentes: hook `onResponse` de Fastify (peticiones que cambian estado y rechazos), rutas (títulos, configuración), runner (ciclo de vida del job, duración de cada paso) y el hook `onEvent` del pipeline (origen analizado, plan, comandos, codificación, empaquetado, publicación).
 
 ## 12. Seguridad
 

@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, rmdir } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { dirname, join } from 'node:path'
+import { commandEvent, emit, encodedEvent, externalsEvent, planEvents, publishedEvent, sourceEvent, subtitlesEvent } from './describe'
 import { buildFfmpegArgs, extractSubtitles, runFfmpeg, type EncodeOutputs } from './ffmpeg'
 import { DASH_MANIFEST, MASTER_PLAYLIST, METADATA_FILE, WORK_DIR, audioDir, renditionDir, subtitleDir } from './layout'
 import { measureBandwidth, mergeMasterPlaylists, mergeMetadata, mergeMpds, replaceFileAtomic } from './manifests'
@@ -97,7 +98,10 @@ export async function processTitle(
   try {
     report('probe')
     const source = await probeSource(binaries, input.sourcePath, hooks.signal)
+    emit(hooks, sourceEvent(source))
     const externals = await probeExternalTracks(binaries, input.externalTracks ?? [], hooks.signal)
+    const externalsInfo = externalsEvent(externals)
+    if (externalsInfo) emit(hooks, externalsInfo)
 
     report('plan')
     const unsupported = unsupportedSourceReason(source)
@@ -119,9 +123,11 @@ export async function processTitle(
 
     report('publish', 0)
     await mkdir(dirname(finalDir), { recursive: true })
-    if (existsSync(finalDir)) await swapFolders(dirs.pkgDir, finalDir)
+    const replaced = existsSync(finalDir)
+    if (replaced) await swapFolders(dirs.pkgDir, finalDir)
     else await rename(dirs.pkgDir, finalDir)
     await discardWorkDirs(dirs)
+    emit(hooks, await publishedEvent(finalDir, { replaced, standards: input.standards, manifests: metadata.manifests }))
     report('publish', 100)
 
     return { titleId: input.titleId, outputFolder: finalDir, source, plan, metadata }
@@ -147,7 +153,10 @@ export async function addToTitle(
   try {
     report('probe')
     const source = await probeSource(binaries, input.sourcePath, hooks.signal)
+    emit(hooks, sourceEvent(source))
     const externals = await probeExternalTracks(binaries, input.externalTracks, hooks.signal)
+    const externalsInfo = externalsEvent(externals)
+    if (externalsInfo) emit(hooks, externalsInfo)
 
     report('plan')
     // Same GOP as the published segments: the actual segment length is gop / fps exactly
@@ -192,6 +201,15 @@ export async function addToTitle(
     const metadata = mergeMetadata(published, addition)
     await replaceFileAtomic(join(titleDir, METADATA_FILE), JSON.stringify(metadata, null, 2) + '\n')
     await discardWorkDirs(dirs)
+    emit(hooks, {
+      level: 'info',
+      message: `Añadido al título y manifiestos actualizados: ${[...plan.renditions.map((r) => `calidad ${r.label}`), ...plan.audio.map((a) => `audio ${audioDir(a)}`), ...plan.subtitles.map((s) => `subtítulo ${subtitleDir(s)}`)].join(', ')}`,
+      context: {
+        outputFolder: titleDir,
+        standards: published.standards,
+        added: { renditions: plan.renditions.map((r) => r.label), audio: plan.audio.map(audioDir), subtitles: plan.subtitles.map(subtitleDir) }
+      }
+    })
     report('publish', 100)
 
     return { titleId: input.titleId, outputFolder: titleDir, source, plan, metadata }
@@ -250,6 +268,7 @@ function logPlan(plan: EncodePlan, hooks: PipelineHooks): void {
   for (const r of plan.renditions) {
     if (r.nativeFallback) hooks.onLog?.(`ninguna calidad configurada aplica: se genera ${r.label} a resolución nativa (${r.width}×${r.height})`)
   }
+  for (const event of planEvents(plan)) emit(hooks, event)
 }
 
 async function encode(
@@ -266,15 +285,18 @@ async function encode(
   plan.subtitles = subtitles.extracted
   plan.skipped.push(...subtitles.failed)
   for (const item of subtitles.failed) hooks.onLog?.(`omitido subtitle ${item.id}: ${item.reason}`)
+  for (const event of subtitlesEvent(subtitles)) emit(hooks, event)
 
   const { args, outputs } = buildFfmpegArgs(source, plan, dirs.encDir, input.videoEncoder)
   if (plan.renditions.length + plan.audio.length > 0) {
     hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
+    emit(hooks, commandEvent('ffmpeg', args, { encoder: input.videoEncoder?.kind ?? 'libx264' }))
     await runFfmpeg(binaries, args, source.durationSeconds, {
       onProgress: (p) => report('encode', p.percent),
       onLog: hooks.onLog,
       signal: hooks.signal
     })
+    emit(hooks, await encodedEvent(outputs))
   }
   report('encode', 100)
   return outputs
@@ -295,10 +317,16 @@ async function packageStreams(
   hooks.onLog?.(`packager ${args.join(' ')}`)
   const streams = plan.renditions.length + plan.audio.length + plan.subtitles.length
   const expectedSegments = Math.ceil(source.durationSeconds / plan.actualSegmentSeconds) * streams
+  emit(hooks, commandEvent('packager', args, { workDir: dirs.workDir, standards, streams, expectedSegments }))
   await runPackager(binaries, args, dirs.workDir, expectedSegments, {
     onProgress: (percent) => report('package', percent),
     onLog: hooks.onLog,
     signal: hooks.signal
+  })
+  emit(hooks, {
+    level: 'info',
+    message: `Empaquetado terminado: ${streams} flujo(s) en ${standards.join(' + ').toUpperCase()}, ~${expectedSegments} segmentos`,
+    context: { standards, streams, expectedSegments }
   })
   report('package', 100)
 }
