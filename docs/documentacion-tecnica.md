@@ -247,9 +247,9 @@ El bloque `source` y los campos `sourceIndex`/`sourceCodec`/`sourceFormat` hacen
 
 ## 11 bis. Registro de acciones
 
-- Tabla `logs` (migración 007): `ts`, `level` (`debug|info|warn|error`), `category` (`app|api|config|titles|jobs|pipeline`), `message`, `job_id`, `title_id`, `context` (JSON). Se conservan las últimas 50 000 entradas; el `id` es `AUTOINCREMENT` para que la paginación hacia atrás (`before`) no se vea afectada por la poda.
+- Tabla `logs` (migración 007): `ts`, `level` (`debug|info|warn|error`), `category` (`app|api|config|titles|jobs|pipeline`), `message`, `job_id`, `title_id`, `context` (JSON). Retención: 7 días y los últimos 100 jobs (entradas de jobs más antiguos se eliminan; las que no pertenecen a un job solo caducan por edad), con un tope de 50 000 filas como red de seguridad; la poda corre al arrancar, cada 500 inserciones y cada hora. El `id` es `AUTOINCREMENT` para que la paginación hacia atrás (`before`) no se vea afectada por la poda.
 - `AppLogger` (`src/server/logging/`) escribe cada entrada en `<datos>/logs/app.log` (rotación 10 MB × 3) desde el primer instante del arranque, antes de abrir la base de datos; las entradas previas se vuelcan a la tabla al abrirla. Cada entrada guardada se emite por el WebSocket como `log.entry`.
-- La salida completa de ffmpeg y del Packager va a `<datos>/logs/jobs/<jobId>.log` (últimos 200 jobs; se borra con el título). Al fallar un job, la entrada de error incluye el paso, el error con su traza y las últimas 200 líneas de esa salida.
+- La salida completa de ffmpeg y del Packager va a `<datos>/logs/jobs/<jobId>.log` (últimos 100 jobs y 7 días; se poda al terminar cada job y al arrancar; se borra con el título). Al fallar un job, la entrada de error incluye el paso, el error con su traza y las últimas 200 líneas de esa salida.
 - Fuentes: hook `onResponse` de Fastify (peticiones que cambian estado y rechazos), rutas (títulos, configuración), runner (ciclo de vida del job, duración de cada paso) y el hook `onEvent` del pipeline (origen analizado, plan, comandos, codificación, empaquetado, publicación).
 
 ## 12. Seguridad

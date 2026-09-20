@@ -180,6 +180,7 @@ async function shutdown(): Promise<void> {
   log?.info('app', 'Cerrando la aplicación', { context: { runningJobs: runner?.hasRunning() ?? false } })
   await runner?.stop()
   await server?.close()
+  log?.close()
   database?.close()
 }
 

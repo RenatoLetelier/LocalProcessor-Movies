@@ -66,13 +66,38 @@ describe('AppLogger', () => {
   })
 
   it('prunes the oldest rows past maxEntries', () => {
-    const log = new AppLogger({ maxEntries: 20 })
+    const log = new AppLogger({ retention: { maxEntries: 20 } })
     log.attachStore(db.repos.logs)
     for (let i = 1; i <= 600; i++) log.info('app', `entrada ${i}`)
     expect(db.repos.logs.count()).toBeLessThanOrEqual(120)
     const kept = db.repos.logs.list({ limit: 1000 })
     expect(kept[kept.length - 1]!.message).toBe('entrada 600')
     expect(kept[0]!.message).not.toBe('entrada 1')
+    log.close()
+  })
+
+  it('keeps seven days and the last 100 jobs by default', () => {
+    const log = new AppLogger()
+    expect(log.retention).toEqual({ maxAgeDays: 7, maxJobs: 100, maxEntries: 50_000 })
+    log.attachStore(db.repos.logs)
+    for (let job = 1; job <= 103; job++) {
+      log.info('jobs', `Job ${job} iniciado`, { jobId: `job-${job}` })
+      log.info('jobs', `Job ${job} completado`, { jobId: `job-${job}` })
+    }
+    log.info('config', 'Configuración actualizada')
+    // Older than a week: gone whatever the job
+    const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    db.repos.logs.insert({ ts: eightDaysAgo, level: 'info', category: 'app', message: 'antigua' })
+    db.repos.logs.insert({ ts: eightDaysAgo, level: 'info', category: 'jobs', message: 'job antiguo', jobId: 'job-103' })
+
+    expect(log.prune()).toBe(3 * 2 + 2)
+    const kept = db.repos.logs.list({ limit: 1000 })
+    expect(kept.some((e) => e.job_id === 'job-3')).toBe(false)
+    expect(kept.some((e) => e.job_id === 'job-4')).toBe(true)
+    expect(kept.filter((e) => e.job_id === 'job-103')).toHaveLength(2)
+    expect(kept.some((e) => e.message === 'antigua')).toBe(false)
+    expect(kept.some((e) => e.message === 'Configuración actualizada')).toBe(true)
+    log.close()
   })
 
   it('describes errors with their own fields', () => {
@@ -152,18 +177,24 @@ describe('JobOutputStore', () => {
     expect(store.read('job-2')).toBeNull()
   })
 
-  it('prunes all but the most recent files', () => {
+  it('prunes all but the most recent files, and anything older than the age limit', () => {
     const store = new JobOutputStore(join(root, 'jobs'))
+    const now = new Date(2026, 0, 10).getTime()
     for (let i = 0; i < 5; i++) {
       writeFileSync(store.path(`job-${i}`), 'x')
-      // Distinct modification times so the order is unambiguous
+      // Distinct modification times so the order is unambiguous: job-0 is 9 days old, job-4 five
       const stamp = new Date(2026, 0, 1 + i)
       utimesSync(store.path(`job-${i}`), stamp, stamp)
     }
-    expect(store.prune(2)).toBe(3)
+    expect(store.prune(2, 7, now)).toBe(3)
     expect(store.read('job-4')).toBe('x')
     expect(store.read('job-3')).toBe('x')
     expect(store.read('job-2')).toBeNull()
+
+    // Within the count limit but past the age limit (job-3 is six days old, job-4 five)
+    expect(store.prune(2, 5.5, now)).toBe(1)
+    expect(store.read('job-4')).toBe('x')
+    expect(store.read('job-3')).toBeNull()
   })
 })
 

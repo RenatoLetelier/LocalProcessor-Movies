@@ -9,7 +9,8 @@ export interface JobOutputWriter {
 }
 
 const TAIL_LINES = 200
-export const DEFAULT_KEEP_JOBS = 200
+export const DEFAULT_KEEP_JOBS = 100
+export const DEFAULT_MAX_AGE_DAYS = 7
 
 // Full ffmpeg / packager output of every job, one file per job under
 // <dataDir>/logs/jobs/. Thousands of lines per movie: they stay out of the
@@ -59,13 +60,14 @@ export class JobOutputStore {
     for (const id of jobIds) rmSync(this.path(id), { force: true })
   }
 
-  // Keeps the most recently written files; returns how many were deleted
-  prune(keep = DEFAULT_KEEP_JOBS): number {
+  // Keeps the most recently written files, none older than maxAgeDays; returns how many were deleted
+  prune(keep = DEFAULT_KEEP_JOBS, maxAgeDays = DEFAULT_MAX_AGE_DAYS, now = Date.now()): number {
+    const cutoff = now - maxAgeDays * 86_400_000
     const files = readdirSync(this.dir)
       .filter((name) => name.endsWith('.log'))
       .map((name) => ({ name, mtime: statSync(join(this.dir, name)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)
-    const stale = files.slice(keep)
+    const stale = [...files.slice(keep), ...files.slice(0, keep).filter((f) => f.mtime < cutoff)]
     for (const file of stale) rmSync(join(this.dir, file.name), { force: true })
     return stale.length
   }

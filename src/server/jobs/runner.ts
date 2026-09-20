@@ -342,6 +342,7 @@ export class JobRunner {
       }
     } finally {
       output?.close()
+      this.deps.jobOutput?.prune()
     }
   }
 

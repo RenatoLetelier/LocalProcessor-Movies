@@ -1,5 +1,5 @@
 import type { LogCategory, LogEntry, LogLevel } from '@shared/model'
-import type { LogsRepository, NewLogEntry } from '../db/repositories/logs'
+import type { LogRetention, LogsRepository, NewLogEntry } from '../db/repositories/logs'
 import type { ServerEvents } from '../jobs/events'
 import type { FileSink } from './file-sink'
 import { formatEntry } from './format'
@@ -14,14 +14,15 @@ export interface LoggerOptions {
   file?: FileSink
   // Mirrors every line somewhere else (the console in development)
   echo?: (line: string) => void
-  // Rows kept in the logs table; the oldest are dropped past this
-  maxEntries?: number
+  retention?: Partial<LogRetention>
   // Keeps nothing (tests, CLI runs)
   discard?: boolean
 }
 
-export const DEFAULT_MAX_LOG_ENTRIES = 50_000
+// Seven days and the last 100 jobs; the row cap is only a safety net
+export const DEFAULT_LOG_RETENTION: LogRetention = { maxAgeDays: 7, maxJobs: 100, maxEntries: 50_000 }
 const PRUNE_EVERY = 500
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000
 // Entries logged before the database is open (startup) wait here
 const MAX_PENDING = 1000
 
@@ -32,8 +33,13 @@ export class AppLogger {
   private events?: ServerEvents
   private readonly pending: NewLogEntry[] = []
   private sincePrune = 0
+  private timer?: ReturnType<typeof setInterval>
 
   constructor(private readonly options: LoggerOptions = {}) {}
+
+  get retention(): LogRetention {
+    return { ...DEFAULT_LOG_RETENTION, ...this.options.retention }
+  }
 
   static silent(): AppLogger {
     return new AppLogger({ discard: true })
@@ -44,6 +50,14 @@ export class AppLogger {
     this.events = events
     for (const entry of this.pending.splice(0)) this.persist(entry)
     this.prune()
+    // Age-based retention must also run while nothing is being logged
+    this.timer ??= setInterval(() => this.prune(), PRUNE_INTERVAL_MS)
+    this.timer.unref?.()
+  }
+
+  close(): void {
+    if (this.timer) clearInterval(this.timer)
+    this.timer = undefined
   }
 
   log(level: LogLevel, category: LogCategory, message: string, detail: LogDetail = {}): void {
@@ -95,9 +109,9 @@ export class AppLogger {
     }
   }
 
-  private prune(): void {
+  prune(): number {
     this.sincePrune = 0
-    this.store?.prune(this.options.maxEntries ?? DEFAULT_MAX_LOG_ENTRIES)
+    return this.store?.prune(this.retention) ?? 0
   }
 }
 

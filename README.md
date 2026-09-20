@@ -150,8 +150,9 @@ La aplicación guarda su base de datos y configuración en:
 
 Dentro de esa carpeta, `logs/app.log` es el registro de todo lo que hace la
 aplicación (rotado a 10 MB, tres archivos) y `logs/jobs/<jobId>.log` guarda la
-salida completa de ffmpeg y del Packager de cada job (se conservan los últimos
-200). El mismo registro se consulta desde la API (`GET /logs`).
+salida completa de ffmpeg y del Packager de cada job. Se conservan **7 días** y
+los **últimos 100 jobs**, tanto en la base de datos como en los archivos de
+ffmpeg. El mismo registro se consulta desde la API (`GET /logs`).
 
 Hasta la versión 1.0.0 la aplicación se llamaba *LocalProcessor* y usaba la
 carpeta `LocalProcessor` del mismo sitio: la primera vez que arranca la versión
@@ -351,7 +352,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.2.0", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.2.1", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,
@@ -794,8 +795,10 @@ cronológico: `level` es el nivel mínimo (`info` por defecto en la interfaz;
 `debug` incluye comandos y avance), `category`, `jobId` y `titleId` acotan,
 `q` busca en el mensaje y el contexto, `before=<id>` pagina hacia el pasado y
 `limit` (1–1000, 200 por defecto) fija el tamaño. `format=text` entrega las
-mismas líneas que `app.log`. La tabla conserva las últimas 50 000 entradas; el
-WebSocket emite cada entrada nueva como `log.entry`.
+mismas líneas que `app.log`. Retención: 7 días y los últimos 100 jobs (las
+entradas que no pertenecen a un job, como arranques y cambios de configuración,
+se rigen por los 7 días); el WebSocket emite cada entrada nueva como
+`log.entry`.
 
 ---
 

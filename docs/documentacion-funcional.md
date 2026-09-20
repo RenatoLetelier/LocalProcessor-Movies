@@ -63,7 +63,7 @@ No es un reproductor ni una plataforma de streaming en sí mismo — es el motor
 - Todo lo que hace el programa queda registrado y se muestra en la sección **Logs**, en tiempo real: cada petición que cambia algo (y cada rechazo, con el motivo), cada cambio de configuración, cada acción sobre un título y el ciclo de vida completo de cada job — encolado, inicio, codificador elegido, duración de cada paso, resultado — además de lo que el pipeline encontró y decidió (pistas, HDR, calidades generadas y omitidas con el motivo, comandos ejecutados, tamaños).
 - Un fallo se registra con detalle suficiente para entender exactamente qué ocurrió: paso en el que falló, error con su traza, código de salida y las últimas líneas de ffmpeg; la salida completa de ffmpeg y del empaquetador de cada job se conserva aparte y se puede abrir desde la propia entrada, desde *Jobs* o desde la ficha del título.
 - La vista se filtra por nivel (info por defecto; debug muestra comandos y avance), categoría, texto, y por job o título (*Ver logs* desde *Jobs* y desde la Biblioteca). Se puede pausar, exportar a texto y abrir la carpeta de logs.
-- El registro persiste (base de datos, últimas 50 000 entradas, y un archivo `app.log` con rotación) y también se consulta por la API.
+- El registro persiste (base de datos y un archivo `app.log` con rotación) con una retención de 7 días y los últimos 100 jobs, y también se consulta por la API.
 
 ## 4. Fuera de alcance (v1)
 

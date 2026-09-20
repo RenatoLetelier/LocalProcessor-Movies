@@ -25,13 +25,22 @@ export interface LogsQuery {
   limit?: number
 }
 
+export interface LogRetention {
+  // Entries older than this are dropped
+  maxAgeDays: number
+  // Entries of jobs other than the most recent N are dropped
+  maxJobs: number
+  // Hard cap on rows, whatever their age
+  maxEntries: number
+}
+
 export interface LogsRepository {
   insert(entry: NewLogEntry): LogEntry
   // The most recent entries matching the query, oldest first
   list(query?: LogsQuery): LogEntry[]
   count(): number
-  // Drops the oldest rows beyond `max`; returns how many were removed
-  prune(max: number): number
+  // Applies the retention rules; returns how many rows were removed
+  prune(retention: LogRetention, now?: Date): number
 }
 
 interface LogRow {
@@ -113,9 +122,21 @@ export function createLogsRepository(db: DatabaseSync): LogsRepository {
 
     count: () => (countAll.get() as { n: number }).n,
 
-    prune(max) {
-      const result = db.prepare('DELETE FROM logs WHERE id <= (SELECT id FROM logs ORDER BY id DESC LIMIT 1 OFFSET ?)').run(max)
-      return Number(result.changes)
+    prune(retention, now = new Date()) {
+      const cutoff = new Date(now.getTime() - retention.maxAgeDays * 86_400_000).toISOString()
+      let removed = Number(db.prepare('DELETE FROM logs WHERE ts < ?').run(cutoff).changes)
+      // Jobs ranked by their latest entry: everything from older jobs goes
+      removed += Number(
+        db
+          .prepare(
+            `DELETE FROM logs WHERE job_id IS NOT NULL AND job_id NOT IN (
+               SELECT job_id FROM (SELECT job_id, MAX(id) AS last FROM logs WHERE job_id IS NOT NULL GROUP BY job_id ORDER BY last DESC LIMIT ?)
+             )`
+          )
+          .run(retention.maxJobs).changes
+      )
+      removed += Number(db.prepare('DELETE FROM logs WHERE id <= (SELECT id FROM logs ORDER BY id DESC LIMIT 1 OFFSET ?)').run(retention.maxEntries).changes)
+      return removed
     }
   }
 }
