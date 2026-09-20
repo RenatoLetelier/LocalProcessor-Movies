@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Job } from '@shared/model'
+import { JobOutputDialog } from '@/components/JobOutputDialog'
 import { ConfirmDialog, EmptyState, ProgressBar, StatusBadge, type ConfirmOptions } from '@/components/ui'
 import { JOB_TIPO_LABEL, STEP_LABEL, formatDate, formatElapsed } from '@/lib/format'
+import type { LogsFilter } from '@/sections/Logs'
 import { useAppState } from '@/state/AppState'
 
 const HISTORY_LIMIT = 100
 
-export function Jobs() {
+export function Jobs({ onShowLogs }: { onShowLogs: (filter: LogsFilter) => void }) {
   const { jobs, titles, cancelJob } = useAppState()
   const [confirm, setConfirm] = useState<ConfirmOptions | null>(null)
+  const [output, setOutput] = useState<Job | null>(null)
   const [, tick] = useState(0)
 
   // Elapsed times of running jobs refresh once per second
@@ -56,6 +59,9 @@ export function Jobs() {
                   </div>
                 </div>
                 <div className="job__percent">{job.progress.toFixed(0)}%</div>
+                <button type="button" className="btn" onClick={() => onShowLogs({ jobId: job.id })}>
+                  Ver logs
+                </button>
                 <button type="button" className="btn btn--danger-outline" onClick={() => askCancel(job)}>
                   Cancelar
                 </button>
@@ -81,6 +87,9 @@ export function Jobs() {
                     <td className="muted">{JOB_TIPO_LABEL[job.tipo]}</td>
                     <td className="muted">{formatDate(job.created_at)}</td>
                     <td className="table__actions">
+                      <button type="button" className="btn btn--sm btn--link" onClick={() => onShowLogs({ jobId: job.id })}>
+                        Ver logs
+                      </button>
                       <button type="button" className="btn btn--sm" onClick={() => askCancel(job)}>
                         Cancelar
                       </button>
@@ -107,6 +116,7 @@ export function Jobs() {
                   <th>Estado</th>
                   <th>Duración</th>
                   <th>Terminado</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -122,6 +132,14 @@ export function Jobs() {
                     </td>
                     <td className="muted">{formatElapsed(job.started_at, job.finished_at)}</td>
                     <td className="muted">{formatDate(job.finished_at)}</td>
+                    <td className="table__actions">
+                      <button type="button" className="btn btn--sm btn--link" onClick={() => onShowLogs({ jobId: job.id })}>
+                        Ver logs
+                      </button>
+                      <button type="button" className="btn btn--sm btn--link" onClick={() => setOutput(job)}>
+                        Salida de ffmpeg
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -131,6 +149,7 @@ export function Jobs() {
       </section>
 
       {confirm && <ConfirmDialog options={confirm} onClose={() => setConfirm(null)} />}
+      {output && <JobOutputDialog jobId={output.id} label={`${titleName(output)} · ${JOB_TIPO_LABEL[output.tipo]}`} onClose={() => setOutput(null)} />}
     </div>
   )
 }

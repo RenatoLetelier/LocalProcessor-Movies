@@ -1,5 +1,5 @@
 import type { AppConfig } from './config'
-import type { AudioTrack, Job, LogEntry, Rendition, SubtitleTrack, Title } from './model'
+import type { AudioTrack, Job, LogCategory, LogEntry, LogLevel, Rendition, SubtitleTrack, Title } from './model'
 
 export interface HealthResponse {
   status: 'ok'
@@ -40,6 +40,17 @@ export interface TitleDetail extends Title {
 export interface CreateTitleResponse {
   title: Title
   job: Job
+}
+
+// Filters of GET /logs; `level` is the minimum level, `before` pages towards the past
+export interface LogsQuery {
+  level?: LogLevel
+  category?: LogCategory
+  jobId?: string
+  titleId?: string
+  q?: string
+  before?: number
+  limit?: number
 }
 
 // Result of scanning the output folder for titles published earlier

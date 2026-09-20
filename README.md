@@ -52,6 +52,9 @@ Los documentos de diseño (funcional y técnico) están en [`docs/`](docs/).
   se mueve o la base de datos se pierde, los títulos publicados se reimportan.
 - Usa la **aceleración por hardware** disponible (NVENC, Quick Sync, AMF, VAAPI,
   VideoToolbox) y cae a CPU (libx264) si no hay ninguna.
+- **Registra todo lo que hace** (sección *Logs*, en tiempo real): cada acción,
+  cada paso de cada job con su duración y, cuando algo falla, el error con su
+  traza, el comando ejecutado y la salida de ffmpeg.
 
 **No hace**
 
@@ -348,7 +351,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.1.0", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.2.0", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,
@@ -779,6 +782,12 @@ reconstruir qué ocurrió cuando algo falla:
 | `titles` | Título creado, archivo subido, importación de la carpeta, origen vinculado, título eliminado (con las rutas). |
 | `jobs` | Encolado, inicio (codificador, intento), cada paso con su duración, avance cada 10 % (`debug`), fin con carpeta y tamaño, cancelación, reintento por software, reencolado tras un cierre inesperado; los fallos llevan el paso, el error con su traza, el código de salida y las últimas 200 líneas de ffmpeg. |
 | `pipeline` | Lo que ffprobe encontró (pistas, HDR, bitrate), el plan (calidades generadas y omitidas con el motivo, pistas copiadas o convertidas, subtítulos descartados), los comandos exactos de ffmpeg y del Packager (`debug`), lo codificado con sus tamaños y lo publicado. |
+
+La sección **Logs** de la aplicación muestra el mismo registro en tiempo real,
+con filtros por nivel, categoría, texto, job o título (*Ver logs* desde *Jobs*
+y desde la ficha del título), el detalle de cada entrada desplegable, la salida
+completa de ffmpeg de cada job, exportación a texto y acceso a la carpeta de
+logs.
 
 `GET /logs` devuelve las entradas más recientes que cumplen el filtro, en orden
 cronológico: `level` es el nivel mínimo (`info` por defecto en la interfaz;

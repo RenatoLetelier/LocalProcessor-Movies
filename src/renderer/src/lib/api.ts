@@ -1,7 +1,7 @@
 import type { AppConfig } from '@shared/config'
 import { bridge } from '@/lib/bridge'
-import type { CreateTitleResponse, HealthResponse, ImportSummary, ReprocessRequest, SystemInfo, TitleDetail, TitleFilesResponse } from '@shared/api'
-import type { Job, JobStatus, Title } from '@shared/model'
+import type { CreateTitleResponse, HealthResponse, ImportSummary, LogsQuery, ReprocessRequest, SystemInfo, TitleDetail, TitleFilesResponse } from '@shared/api'
+import type { Job, JobStatus, LogEntry, Title } from '@shared/model'
 
 let baseUrlPromise: Promise<string> | undefined
 
@@ -34,6 +34,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T
 }
 
+// Plain-text endpoints (log exports, ffmpeg output)
+async function requestText(path: string): Promise<string> {
+  const res = await fetch(`${await apiBaseUrl()}${path}`)
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    throw new ApiError(res.status, typeof body.message === 'string' ? body.message : `${res.status} ${res.statusText}`, body)
+  }
+  return res.text()
+}
+
+function logsQueryString(query: LogsQuery, extra: Record<string, string> = {}): string {
+  const params = new URLSearchParams(extra)
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
+
 export const api = {
   health: () => request<HealthResponse>('/health'),
   system: () => request<SystemInfo>('/system'),
@@ -52,5 +71,8 @@ export const api = {
     request<CreateTitleResponse>('/titles', { method: 'POST', body: JSON.stringify({ sourcePath, ...(name ? { name } : {}) }) }),
   listJobs: (status: JobStatus[] | 'all' = 'all') =>
     request<Job[]>(`/jobs?status=${status === 'all' ? 'all' : status.join(',')}`),
-  cancelJob: (id: string) => request<Job>(`/jobs/${id}/cancel`, { method: 'POST' })
+  cancelJob: (id: string) => request<Job>(`/jobs/${id}/cancel`, { method: 'POST' }),
+  listLogs: (query: LogsQuery = {}) => request<LogEntry[]>(`/logs${logsQueryString(query)}`),
+  logsText: (query: LogsQuery = {}) => requestText(`/logs${logsQueryString(query, { format: 'text' })}`),
+  jobOutput: (id: string) => requestText(`/jobs/${id}/log`)
 }

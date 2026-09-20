@@ -1005,3 +1005,137 @@ select.input {
   width: auto;
   min-width: 280px;
 }
+
+/* Logs */
+
+.logs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.logs__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 12px 14px;
+}
+
+.logs__toolbar .input {
+  width: auto;
+}
+
+.logs__search {
+  flex: 1;
+  min-width: 200px;
+}
+
+.logs__spacer {
+  flex: 1;
+}
+
+.logs__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.logs__chip button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.logs__list {
+  padding: 0;
+  min-height: 240px;
+  max-height: calc(100vh - 262px);
+  overflow: auto;
+  font-size: 12.5px;
+}
+
+.logs__list .empty {
+  border: 0;
+}
+
+.logs__older {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  text-align: center;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.log {
+  display: grid;
+  grid-template-columns: 78px 60px 100px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--panel-border);
+  cursor: pointer;
+}
+
+.log:hover {
+  background: var(--hover-bg);
+}
+
+.log--warn {
+  background: var(--warn-soft);
+}
+
+.log--error {
+  background: var(--error-soft);
+}
+
+.log--debug .log__message {
+  color: var(--panel-fg-muted);
+}
+
+.log__time {
+  white-space: nowrap;
+  color: var(--panel-fg-muted);
+}
+
+.log__category {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.log__message {
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.log__detail {
+  padding: 10px 14px 12px 100px;
+  border-bottom: 1px solid var(--panel-border);
+  background: var(--panel-bg);
+}
+
+.log__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.log__detail .codeblock {
+  margin: 6px 0 0;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.logs__output {
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre;
+}

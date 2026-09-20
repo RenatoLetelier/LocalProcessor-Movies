@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   })
 
   serveRenderer(join(__dirname, '../renderer'), buildRendererCsp(apiBaseUrl))
-  registerIpcHandlers(apiBaseUrl, database.repos)
+  registerIpcHandlers(apiBaseUrl, database.repos, logsDir)
   app.on('browser-window-created', (_event, window) => optimizer.watchWindowShortcuts(window))
 
   openWindow()

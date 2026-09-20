@@ -22,6 +22,8 @@ export interface AppState {
   deleteTitle: (id: string) => Promise<void>
   importTitles: () => Promise<ImportSummary>
   linkSource: (id: string, sourcePath: string) => Promise<Title>
+  // Raw WebSocket events, for views that want more than the shared lists (the Logs section)
+  subscribe: (listener: (event: ServerEvent) => void) => () => void
 }
 
 const AppStateContext = createContext<AppState | null>(null)
@@ -47,6 +49,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [titles, setTitles] = useState<Title[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const socketRef = useRef<WebSocket | null>(null)
+  const listenersRef = useRef(new Set<(event: ServerEvent) => void>())
 
   const reload = useCallback(async () => {
     try {
@@ -86,6 +89,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           setConfig(event.config)
           break
       }
+      for (const listener of listenersRef.current) listener(event)
     }
 
     const connect = async (): Promise<void> => {
@@ -156,9 +160,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setJobs((list) => list.filter((j) => j.title_id !== id))
   }, [])
 
+  const subscribe = useCallback((listener: (event: ServerEvent) => void) => {
+    listenersRef.current.add(listener)
+    return () => {
+      listenersRef.current.delete(listener)
+    }
+  }, [])
+
   const value = useMemo<AppState>(
-    () => ({ connection, apiVersion, ready, loadError, config, titles, jobs, reload, saveConfig, regenerateApiToken, enqueue, cancelJob, deleteTitle, importTitles, linkSource }),
-    [connection, apiVersion, ready, loadError, config, titles, jobs, reload, saveConfig, regenerateApiToken, enqueue, cancelJob, deleteTitle, importTitles, linkSource]
+    () => ({ connection, apiVersion, ready, loadError, config, titles, jobs, reload, saveConfig, regenerateApiToken, enqueue, cancelJob, deleteTitle, importTitles, linkSource, subscribe }),
+    [connection, apiVersion, ready, loadError, config, titles, jobs, reload, saveConfig, regenerateApiToken, enqueue, cancelJob, deleteTitle, importTitles, linkSource, subscribe]
   )
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>

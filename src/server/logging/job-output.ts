@@ -24,28 +24,35 @@ export class JobOutputStore {
   }
 
   open(jobId: string): JobOutputWriter {
-    const fd = openSync(this.path(jobId), 'a')
+    const file = this.path(jobId)
+    const fd = openSync(file, 'a')
     const tail: string[] = []
     let closed = false
+    let written = 0
     return {
       write: (line) => {
         if (closed) return
         tail.push(line)
         if (tail.length > TAIL_LINES) tail.shift()
         writeSync(fd, `${new Date().toISOString()} ${line}\n`)
+        written++
       },
       tail: () => [...tail],
       close: () => {
         if (closed) return
         closed = true
         closeSync(fd)
+        // A job that failed before running anything leaves no file behind
+        if (written === 0) rmSync(file, { force: true })
       }
     }
   }
 
   read(jobId: string): string | null {
     const file = this.path(jobId)
-    return existsSync(file) ? readFileSync(file, 'utf8') : null
+    if (!existsSync(file)) return null
+    const text = readFileSync(file, 'utf8')
+    return text.length > 0 ? text : null
   }
 
   remove(jobIds: string[]): void {

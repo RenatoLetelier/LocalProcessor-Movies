@@ -1,7 +1,7 @@
 {
   "name": "localprocessor-movies",
   "productName": "LocalProcessor-Movies",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Motor de transcodificación VOD: convierte películas a HLS/DASH para que otro sistema las sirva por streaming",
   "author": "Renato Letelier",
   "private": true,

@@ -144,6 +144,12 @@ describe('JobOutputStore', () => {
 
     store.remove(['job-1'])
     expect(store.read('job-1')).toBeNull()
+
+    // Nothing written: no file to serve
+    const empty = store.open('job-2')
+    empty.close()
+    expect(existsSync(store.path('job-2'))).toBe(false)
+    expect(store.read('job-2')).toBeNull()
   })
 
   it('prunes all but the most recent files', () => {

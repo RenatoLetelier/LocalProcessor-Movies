@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { bridge } from '@/lib/bridge'
 import type { FolderEntry, ImportSummary, TitleDetail, TitleFilesResponse } from '@shared/api'
-import type { Title } from '@shared/model'
+import type { Job, Title } from '@shared/model'
+import { JobOutputDialog } from '@/components/JobOutputDialog'
 import { ConfirmDialog, EmptyState, StatusBadge, type ConfirmOptions } from '@/components/ui'
 import { api } from '@/lib/api'
 import { JOB_STATUS_LABEL, JOB_TIPO_LABEL, formatBitrate, formatBytes, formatDate, formatDuration } from '@/lib/format'
 import { useAppState } from '@/state/AppState'
+import type { LogsFilter } from '@/sections/Logs'
 import { ReprocessDialog } from '@/sections/ReprocessDialog'
 
-export function Library({ selectedId, onSelect }: { selectedId: string | null; onSelect: (id: string | null) => void }) {
+export function Library({ selectedId, onSelect, onShowLogs }: { selectedId: string | null; onSelect: (id: string | null) => void; onShowLogs: (filter: LogsFilter) => void }) {
   const { titles, importTitles } = useAppState()
   const [scanning, setScanning] = useState(false)
   const [summary, setSummary] = useState<ImportSummary | null>(null)
@@ -32,7 +34,7 @@ export function Library({ selectedId, onSelect }: { selectedId: string | null; o
     }
   }
 
-  if (selected) return <TitleView title={selected} onBack={() => onSelect(null)} />
+  if (selected) return <TitleView title={selected} onBack={() => onSelect(null)} onShowLogs={onShowLogs} />
 
   const scanButton = (
     <button type="button" className="btn" disabled={scanning} onClick={() => void scan()}>
@@ -129,13 +131,14 @@ function ImportResult({ summary, onClose }: { summary: ImportSummary; onClose: (
   )
 }
 
-function TitleView({ title, onBack }: { title: Title; onBack: () => void }) {
+function TitleView({ title, onBack, onShowLogs }: { title: Title; onBack: () => void; onShowLogs: (filter: LogsFilter) => void }) {
   const { deleteTitle, linkSource } = useAppState()
   const [detail, setDetail] = useState<TitleDetail | null>(null)
   const [files, setFiles] = useState<TitleFilesResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmOptions | null>(null)
   const [reprocessing, setReprocessing] = useState(false)
+  const [output, setOutput] = useState<Job | null>(null)
   const [linking, setLinking] = useState(false)
 
   const pickSource = async (): Promise<void> => {
@@ -195,6 +198,9 @@ function TitleView({ title, onBack }: { title: Title; onBack: () => void }) {
         <div className="actions">
           <button type="button" className="btn" disabled={!files?.exists} onClick={() => void bridge.openFolder(title.output_folder)}>
             Abrir carpeta
+          </button>
+          <button type="button" className="btn" onClick={() => onShowLogs({ titleId: title.id })}>
+            Ver logs
           </button>
           <button
             type="button"
@@ -389,6 +395,14 @@ function TitleView({ title, onBack }: { title: Title; onBack: () => void }) {
                     </td>
                     <td className="muted">{formatDate(job.created_at)}</td>
                     <td className="table__note">{job.error ?? (job.status === 'running' ? `${job.progress.toFixed(0)}%` : JOB_STATUS_LABEL[job.status])}</td>
+                    <td className="table__actions">
+                      <button type="button" className="btn btn--sm btn--link" onClick={() => onShowLogs({ jobId: job.id })}>
+                        Ver logs
+                      </button>
+                      <button type="button" className="btn btn--sm btn--link" onClick={() => setOutput(job)}>
+                        Salida de ffmpeg
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -398,6 +412,7 @@ function TitleView({ title, onBack }: { title: Title; onBack: () => void }) {
       )}
 
       {confirm && <ConfirmDialog options={confirm} onClose={() => setConfirm(null)} />}
+      {output && <JobOutputDialog jobId={output.id} label={`${title.name} · ${JOB_TIPO_LABEL[output.tipo]}`} onClose={() => setOutput(null)} />}
       {reprocessing && detail && (
         <ReprocessDialog title={title} detail={detail} onClose={() => setReprocessing(false)} onQueued={() => setReprocessing(false)} />
       )}

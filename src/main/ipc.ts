@@ -1,13 +1,35 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { resolve, sep } from 'node:path'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { writeFile } from 'node:fs/promises'
+import { join, resolve, sep } from 'node:path'
 import type { Repositories } from '@server/db/repositories'
 
 const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'avi', 'mov', 'm4v', 'ts', 'm2ts', 'webm', 'wmv', 'flv', 'mpg', 'mpeg', 'vob', 'ogv']
 const SUBTITLE_EXTENSIONS = ['srt', 'ass', 'ssa', 'vtt']
 const AUDIO_EXTENSIONS = ['mka', 'm4a', 'aac', 'ac3', 'eac3', 'mp3', 'flac', 'wav', 'opus', 'ogg', 'dts', 'wma']
 
-export function registerIpcHandlers(apiBaseUrl: string, repos: Repositories): void {
+export function registerIpcHandlers(apiBaseUrl: string, repos: Repositories, logsDir: string): void {
   ipcMain.handle('app:api-base-url', () => apiBaseUrl)
+
+  ipcMain.handle('shell:open-logs-folder', async () => {
+    await shell.openPath(logsDir)
+  })
+
+  ipcMain.handle('dialog:save-text-file', async (event, suggestedName: unknown, content: unknown) => {
+    if (typeof suggestedName !== 'string' || typeof content !== 'string') return null
+    const owner = ownerOf(event.sender)
+    const options: Electron.SaveDialogOptions = {
+      title: 'Guardar registro',
+      defaultPath: join(app.getPath('downloads'), suggestedName),
+      filters: [
+        { name: 'Texto', extensions: ['txt', 'log'] },
+        { name: 'Todos los archivos', extensions: ['*'] }
+      ]
+    }
+    const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, content, 'utf8')
+    return result.filePath
+  })
 
   ipcMain.handle('dialog:pick-video-files', async (event) => {
     const owner = ownerOf(event.sender)
