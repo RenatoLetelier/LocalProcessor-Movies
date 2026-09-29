@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, Tray } from 'electron'
+import { app, BrowserWindow, dialog, Menu } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import type { FastifyInstance } from 'fastify'
 import { join } from 'node:path'
@@ -22,18 +22,10 @@ import { buildRendererCsp, registerRendererScheme, serveRenderer } from './rende
 const apiPort = Number(process.env.LP_API_PORT) || DEFAULT_API_PORT
 const apiBaseUrl = `http://${DEFAULT_API_HOST}:${apiPort}`
 
-// Background mode, for a machine that processes unattended (started at logon): no window
-// at start, and closing the window leaves the API and the queue running. Opening the app
-// again shows a window of the running instance; the tray icon quits. Not "--headless":
-// Chromium takes that one for its own headless mode, where no window can ever be shown.
-const background = process.argv.includes('--background') || process.env.LP_BACKGROUND === '1'
-
 let database: AppDatabase | undefined
 let server: FastifyInstance | undefined
 let runner: JobRunner | undefined
 let log: AppLogger | undefined
-let tray: Tray | undefined
-let ready = false
 let shuttingDown = false
 
 // One running instance: the API port is fixed and SQLite has a single writer
@@ -42,10 +34,14 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   registerRendererScheme()
 
-  app.on('second-instance', () => showWindow())
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  })
 
   app.on('window-all-closed', () => {
-    if (background) return
     if (process.platform !== 'darwin') app.quit()
   })
 
@@ -116,44 +112,11 @@ async function main(): Promise<void> {
   registerIpcHandlers(apiBaseUrl, database.repos, logsDir)
   app.on('browser-window-created', (_event, window) => optimizer.watchWindowShortcuts(window))
 
-  ready = true
-  if (background) {
-    log.info('app', 'En segundo plano: sin ventana; la API y la cola siguen aunque se cierre la ventana', { context: { argv: process.argv.slice(1) } })
-    await createTray()
-  } else {
-    openWindow()
-  }
+  openWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) openWindow()
   })
   runner.start()
-}
-
-function showWindow(): void {
-  if (!ready) return
-  const win = BrowserWindow.getAllWindows()[0]
-  if (!win) return openWindow()
-  if (win.isMinimized()) win.restore()
-  win.focus()
-}
-
-// The icon of the executable itself: no image to ship, and it is the one people know
-async function createTray(): Promise<void> {
-  try {
-    tray = new Tray(await app.getFileIcon(process.execPath, { size: 'small' }))
-  } catch (error) {
-    log?.warn('app', 'No se pudo crear el icono de la bandeja; la aplicación sigue sin él', { context: errorContext(error) })
-    return
-  }
-  tray.setToolTip(`${APP_NAME} (en segundo plano)`)
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `Abrir ${APP_NAME}`, click: () => showWindow() },
-      { type: 'separator' },
-      { label: 'Salir', click: () => app.quit() }
-    ])
-  )
-  tray.on('double-click', () => showWindow())
 }
 
 function apiHostFor(config: AppConfig): string {
@@ -199,8 +162,7 @@ class ApiListener {
 function openWindow(): void {
   const win = createMainWindow()
   win.on('close', (event) => {
-    // In background mode closing the window stops nothing
-    if (background || shuttingDown || !runner?.hasRunning()) return
+    if (shuttingDown || !runner?.hasRunning()) return
     const choice = dialog.showMessageBoxSync(win, {
       type: 'question',
       buttons: ['Salir', 'Seguir procesando'],
@@ -216,7 +178,6 @@ function openWindow(): void {
 
 async function shutdown(): Promise<void> {
   log?.info('app', 'Cerrando la aplicación', { context: { runningJobs: runner?.hasRunning() ?? false } })
-  tray?.destroy()
   await runner?.stop()
   await server?.close()
   log?.close()

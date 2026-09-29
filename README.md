@@ -60,8 +60,6 @@ Los documentos de diseño (funcional y técnico) están en [`docs/`](docs/).
 - Acepta del consumidor **nombres, idiomas y pista predeterminada** de cada
   pista (por ejemplo, los de un catálogo) y reescribe en el acto los manifiestos
   y `metadata.json`, sin tocar un solo segmento.
-- Puede correr **en segundo plano** (`--background`): sin ventana, con icono en
-  la bandeja, para un equipo que procesa desatendido.
 - **Registra todo lo que hace** (sección *Logs*, en tiempo real): cada acción,
   cada paso de cada job con su duración y, cuando algo falla, el error con su
   traza, el comando ejecutado y la salida de ffmpeg.
@@ -107,8 +105,7 @@ Localcloud (backend)                          LocalProcessor-Movies (app de escr
 
 1. **La API existe mientras la aplicación está abierta.** Vive dentro de la app
    de escritorio; al cerrar la ventana se detiene (en macOS sigue mientras la
-   app esté en el Dock), salvo que corra **en segundo plano** (ver
-   [3.1](#31-en-segundo-plano)): así la usa un equipo que procesa desatendido.
+   app esté en el Dock). No hay servicio en segundo plano.
 2. **Se integra desde el backend, no desde el navegador.** La API solo permite
    CORS al origen de su propia ventana: una página web de otro origen ve sus
    peticiones bloqueadas y su WebSocket cerrado con código `1008`. Los clientes
@@ -175,32 +172,6 @@ en `GET /system`). Si un codificador por hardware falla, el trabajo se repite
 con libx264 automáticamente.
 
 ---
-
-### 3.1 En segundo plano
-
-Para un equipo que procesa sin nadie delante (un servidor en casa), la
-aplicación arranca sin ventana con `--background` (o la variable de entorno
-`LP_BACKGROUND=1`):
-
-- No abre ventana; la API y la cola funcionan igual. Un icono en la bandeja del
-  sistema abre la ventana (doble clic o *Abrir*) y cierra la aplicación
-  (*Salir*, que deja los jobs en curso reencolados como cualquier cierre).
-- Abrir la aplicación otra vez (menú Inicio, acceso directo) muestra la ventana
-  de la instancia que ya corre. Cerrar esa ventana no detiene nada.
-
-Para que arranque sola al iniciar sesión en Windows, un acceso directo en la
-carpeta de inicio (`Win + R` → `shell:startup`) con destino:
-
-```
-"%LOCALAPPDATA%\Programs\LocalProcessor-Movies\LocalProcessor-Movies.exe" --background
-```
-
-Tras un corte de luz vuelve cuando el usuario inicia sesión: en un equipo sin
-teclado conviene el inicio de sesión automático de Windows.
-
-No se llama `--headless` a propósito: Chromium, sobre el que corre Electron, usa
-ese nombre para su propio modo sin pantalla, en el que no se puede mostrar
-ninguna ventana.
 
 ## 4. Qué produce
 
@@ -883,7 +854,6 @@ Los cambios se aplican a los jobs que se encolen a partir de ese momento.
 | Variable | Efecto |
 |---|---|
 | `LP_API_PORT` | Puerto de la API (por defecto `4700`). |
-| `LP_BACKGROUND` | `1` arranca en segundo plano, igual que `--background` (ver [3.1](#31-en-segundo-plano)). |
 | `LP_DATA_DIR` | Carpeta de la base de datos (por defecto, la carpeta de datos del usuario). |
 | `LP_FFMPEG`, `LP_FFPROBE`, `LP_PACKAGER` | Rutas a binarios propios en lugar de los incluidos. |
 
