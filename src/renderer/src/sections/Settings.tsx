@@ -172,6 +172,34 @@ export function Settings() {
       </div>
 
       <div className="card">
+        <h3 className="card__title">Copiar el video del origen</h3>
+        <label className="check">
+          <input type="checkbox" checked={draft.copyVideo} onChange={(e) => update({ copyVideo: e.target.checked })} />
+          <span>
+            <strong>Copiar el video cuando ya es compatible</strong>
+            <span className="muted">
+              {' '}
+              — un H.264 de 8 bits SDR que no supera el tope se publica tal cual, como calidad «original»: sin pérdida y en segundos. Al lado
+              se codifica solo la calidad activa más baja, para conexiones lentas. HEVC, 10 bits y HDR se codifican siempre.
+            </span>
+          </span>
+        </label>
+        <label className="field">
+          <span>Tope para copiar (kbps)</span>
+          <input
+            className="input input--sm"
+            type="number"
+            min={1}
+            step={500}
+            disabled={!draft.copyVideo}
+            value={draft.copyVideoMaxKbps}
+            onChange={(e) => update({ copyVideoMaxKbps: Number(e.target.value) })}
+          />
+        </label>
+        <p className="muted">Lo que cabe por el enlace de quienes miran. Un origen más pesado se codifica con las calidades de arriba.</p>
+      </div>
+
+      <div className="card">
         <h3 className="card__title">Rendimiento</h3>
         {system && (
           <div className="stack-sm">

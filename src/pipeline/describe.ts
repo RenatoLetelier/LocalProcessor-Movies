@@ -75,7 +75,9 @@ export function externalsEvent(infos: Map<string, TrackFileInfo | null>): Pipeli
 }
 
 export function planEvents(plan: EncodePlan): PipelineLogEvent[] {
-  const renditions = plan.renditions.map((r) => `${r.label} ${r.width}×${r.height} ≤${r.maxBitrateKbps} kbps${r.nativeFallback ? ' (resolución nativa)' : ''}`)
+  const renditions = plan.renditions.map((r) =>
+    r.copy ? `${r.label} ${r.width}×${r.height} copia del origen (${r.maxBitrateKbps} kbps)` : `${r.label} ${r.width}×${r.height} ≤${r.maxBitrateKbps} kbps${r.nativeFallback ? ' (resolución nativa)' : ''}`
+  )
   const audio = plan.audio.map((a) => `${audioTrackId(a)} ${a.action === 'copy' ? `${a.outputCodec} copiado` : `${a.sourceCodec} → ${a.outputCodec}`} ${a.channels}ch`)
   const subtitles = plan.subtitles.map((s) => `${subtitleTrackId(s)} ${s.sourceCodec}${s.forced ? ' forzado' : ''}`)
   const events: PipelineLogEvent[] = [
@@ -85,7 +87,8 @@ export function planEvents(plan: EncodePlan): PipelineLogEvent[] {
       context: {
         segmentDurationSeconds: plan.segmentDurationSeconds,
         actualSegmentSeconds: plan.actualSegmentSeconds,
-        renditions: plan.renditions.map((r) => ({ label: r.label, width: r.width, height: r.height, maxBitrateKbps: r.maxBitrateKbps, gopFrames: r.gopFrames, nativeFallback: r.nativeFallback ?? false })),
+        keyframes: plan.keyframes ?? 'gop',
+        renditions: plan.renditions.map((r) => ({ label: r.label, width: r.width, height: r.height, maxBitrateKbps: r.maxBitrateKbps, gopFrames: r.gopFrames, nativeFallback: r.nativeFallback ?? false, copy: r.copy ?? false })),
         audio: plan.audio.map((a) => ({
           id: audioTrackId(a),
           sourceIndex: a.sourceIndex,

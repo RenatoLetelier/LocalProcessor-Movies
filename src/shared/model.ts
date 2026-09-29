@@ -2,6 +2,23 @@
 // the ER diagram of docs/documentacion-tecnica.md verbatim (mixed es/en included).
 
 export type TitleStatus = 'queued' | 'processing' | 'done' | 'error'
+
+// One source track (by its stream index, the sourceIndex of metadata.json) as the
+// consumer wants it shown. Absent or null fields keep what the source says; a Dolby
+// track and its AAC companion share the index and take the same override.
+export interface TrackOverride {
+  sourceIndex: number
+  name?: string | null
+  language?: string | null
+  default?: boolean
+  // Subtitles only
+  forced?: boolean
+}
+
+export interface TrackOverrides {
+  audio?: TrackOverride[]
+  subtitles?: TrackOverride[]
+}
 export type ArtifactStatus = 'pending' | 'processing' | 'done' | 'error'
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
 export type JobTipo = 'inicial' | 'agregar_calidad' | 'agregar_pista' | 'reprocesar_completo'
@@ -23,6 +40,8 @@ export interface Title {
   output_folder: string
   // True when the source file was uploaded through the API and is ours to delete
   source_managed: boolean
+  // Names, languages and default tracks set by the consumer, applied over the source's
+  track_overrides: TrackOverrides | null
   status: TitleStatus
   error: string | null
   created_at: string

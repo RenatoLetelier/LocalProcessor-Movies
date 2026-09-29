@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { basename } from 'node:path'
-import type { Job } from '@shared/model'
+import type { Job, Title } from '@shared/model'
 import { PipelineError, addToTitle, processTitle } from '@pipeline/index'
 import { SOFTWARE_ENCODER, encoderSpec, isHardwareEncoder, type EncoderKind } from '@pipeline/encoders'
 import { ProcessError } from '@pipeline/exec'
@@ -12,10 +12,11 @@ import { formatDuration } from '../logging/format'
 import type { JobOutputStore } from '../logging/job-output'
 import { AppLogger, errorContext } from '../logging/logger'
 import { computeConcurrency, resolveEncoder } from './concurrency'
-import { parseJobConfig, type JobConfig } from './config'
+import { parseJobConfig, planOptionsOf, type JobConfig } from './config'
 import type { ServerEvents } from './events'
 import { recordIncremental, recordResult } from './record'
 import { sourceHash } from './source-hash'
+import { relabelTitle } from './track-overrides'
 
 export type PipelineFn = typeof processTitle
 export type IncrementalFn = typeof addToTitle
@@ -261,7 +262,8 @@ export class JobRunner {
       // Jobs are only ever queued for titles with a source; an imported title must link one first
       if (!title.source_path) throw new Error('El título no tiene archivo de origen vinculado')
       const sourcePath = title.source_path
-      const base = { titleId: title.id, name: title.name, sourcePath, outputRoot: config.outputFolder }
+      const trackOverrides = title.track_overrides
+      const base = { titleId: title.id, name: title.name, sourcePath, outputRoot: config.outputFolder, trackOverrides }
       let result: PipelineResult
       if (job.tipo === 'inicial' || job.tipo === 'reprocesar_completo') {
         result = await this.withSoftwareFallback(job, encoder, hooks, (videoEncoder) =>
@@ -270,7 +272,7 @@ export class JobRunner {
             {
               ...base,
               standards: config.standards,
-              plan: { rungs: config.rungs, qualities: config.qualities, segmentDurationSeconds: config.segmentDurationSeconds },
+              plan: planOptionsOf(config),
               externalTracks: config.externalTracks,
               replaceExisting: job.tipo === 'reprocesar_completo',
               videoEncoder
@@ -303,6 +305,7 @@ export class JobRunner {
         )
         recordIncremental(repos, this.deps.db, result)
       }
+      await this.relabelIfChanged(title.id, result.outputFolder, trackOverrides, ref)
       this.finish(job.id, 'done', null)
       closeStep()
       const durationMs = Date.now() - startedAt
@@ -343,6 +346,18 @@ export class JobRunner {
     } finally {
       output?.close()
       this.deps.jobOutput?.prune()
+    }
+  }
+
+  // Overrides sent while the job ran reached the database but not this output
+  private async relabelIfChanged(titleId: string, folder: string, used: Title['track_overrides'], ref: { jobId: string; titleId: string }): Promise<void> {
+    const latest = this.deps.repos.titles.get(titleId)?.track_overrides ?? null
+    if (JSON.stringify(latest) === JSON.stringify(used)) return
+    try {
+      await relabelTitle(titleId, folder, latest)
+      this.log.info('jobs', 'Pistas redefinidas durante el job: aplicadas al terminar', { ...ref, context: { overrides: latest } })
+    } catch (error) {
+      this.log.warn('jobs', 'No se pudieron aplicar las pistas redefinidas durante el job; vuelve a enviarlas', { ...ref, context: errorContext(error) })
     }
   }
 

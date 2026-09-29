@@ -32,6 +32,11 @@ export function validateConfig(config: AppConfig): string[] {
     }
   }
 
+  if (typeof config.copyVideo !== 'boolean') problems.push('copyVideo: debe ser true o false')
+  if (!Number.isInteger(config.copyVideoMaxKbps) || config.copyVideoMaxKbps <= 0) {
+    problems.push('copyVideoMaxKbps: debe ser un entero positivo')
+  }
+
   if (config.encoder !== 'auto' && config.encoder !== 'software') problems.push('encoder: debe ser "auto" o "software"')
   const jobs = config.maxConcurrentJobs
   if (jobs !== 'auto' && (!Number.isInteger(jobs) || jobs < 1 || jobs > 16)) {

@@ -18,6 +18,10 @@ export interface AppConfig {
   qualities: string[]
   rungs: Record<string, Rung>
   segmentDurationSeconds: number
+  // Package the source video as is when browsers already decode it (8-bit H.264 SDR) and
+  // it fits under copyVideoMaxKbps; only the smallest quality is encoded next to it
+  copyVideo: boolean
+  copyVideoMaxKbps: number
   // auto = best hardware encoder that works on this machine, software = always libx264
   encoder: EncoderPreference
   // auto = derived from the detected hardware and the number of enabled qualities
@@ -41,6 +45,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   qualities: ['2160p', '1080p', '720p', '480p'],
   rungs: DEFAULT_RUNGS,
   segmentDurationSeconds: 6,
+  copyVideo: true,
+  copyVideoMaxKbps: 12000,
   encoder: 'auto',
   maxConcurrentJobs: 'auto',
   apiAccess: 'local',

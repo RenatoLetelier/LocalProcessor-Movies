@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_CONFIG } from '@shared/config'
-import { aacBitrateKbps, fitInBox, gopFrames, planAudio, planAudioTracks, planEncode, planExternalTrack, planSubtitle, unsupportedSourceReason, wouldUpscale } from '../plan'
+import { COPY_LABEL, aacBitrateKbps, canCopyVideo, fitInBox, gopFrames, planAudio, planAudioTracks, planEncode, planExternalTrack, planSubtitle, unsupportedSourceReason, wouldUpscale } from '../plan'
 import type { SourceAudio, SourceInfo, SourceSubtitle } from '../types'
 
 const audio = (over: Partial<SourceAudio>): SourceAudio => ({
@@ -13,6 +13,7 @@ const audio = (over: Partial<SourceAudio>): SourceAudio => ({
   language: 'spa',
   title: null,
   isDefault: false,
+  aacChannelConfig: null,
   ...over
 })
 
@@ -220,8 +221,50 @@ describe('planAudio', () => {
       language: 'es',
       name: 'Latino'
     })
-    expect(planAudio(audio({ codec: 'truehd', channels: 8 })).channels).toBe(8)
     expect(planAudio(audio({ codec: 'flac', channels: 1 })).bitrateKbps).toBe(128)
+  })
+
+  it('encodes three channels and up as standard 5.1, the most every browser decodes', () => {
+    // -ac 3 would be 2.1 with the dialogue in the LFE; 7 and 8 have no layout Chrome takes for sure
+    expect([3, 4, 5, 6, 7, 8].map((channels) => planAudio(audio({ codec: 'dts', channels })).channels)).toEqual([6, 6, 6, 6, 6, 6])
+    expect(planAudio(audio({ codec: 'truehd', channels: 8 })).bitrateKbps).toBe(384)
+    // A Dolby 7.1 is copied as is; its AAC companion is 5.1
+    expect(planAudioTracks(audio({ codec: 'eac3', channels: 8 })).map((a) => [a.outputCodec, a.channels])).toEqual([
+      ['eac3', 8],
+      ['aac', 6]
+    ])
+  })
+
+  it('copies an AAC only with a standard channelConfiguration: Chrome does not parse a PCE', () => {
+    // What left a movie black: an AAC 5.1(side) carries channelConfiguration 0 and a PCE, and
+    // Chrome's MP4 demuxer fails the append. The extradata decides; the layout name only
+    // when there is none (ADTS), since a hand-written PCE for 5.1 is reported as "5.1".
+    const plans = [
+      audio({ channels: 6, channelLayout: '5.1(side)', aacChannelConfig: 0 }),
+      audio({ channels: 6, channelLayout: '5.1', aacChannelConfig: 0 }),
+      audio({ channels: 2, channelLayout: 'stereo', aacChannelConfig: 0 }),
+      audio({ channels: 8, channelLayout: '7.1', aacChannelConfig: 7 }),
+      audio({ channels: 8, channelLayout: '7.1(wide)', aacChannelConfig: 0 }),
+      audio({ channels: 8, channelLayout: '7.1', aacChannelConfig: 12 }),
+      audio({ channels: 6, channelLayout: null }),
+      audio({ channels: 6, channelLayout: '5.1(side)' }),
+      audio({ channels: 6, channelLayout: '5.1' }),
+      audio({ channels: 2, channelLayout: null }),
+      audio({ channels: 1, channelLayout: null })
+    ].map((track) => planAudio(track))
+    expect(plans.map((p) => [p.action, p.channels])).toEqual([
+      ['transcode', 6],
+      ['transcode', 6],
+      ['transcode', 2],
+      ['copy', 8],
+      ['transcode', 6],
+      ['transcode', 6],
+      ['transcode', 6],
+      ['transcode', 6],
+      ['copy', 6],
+      ['copy', 2],
+      ['copy', 1]
+    ])
   })
 
   it('names untagged tracks as undetermined', () => {
@@ -247,7 +290,54 @@ describe('planAudio', () => {
     ])
   })
 
-  it('scales AAC bitrate with channels inside 128–512 kbps', () => {
-    expect([1, 2, 6, 8].map(aacBitrateKbps)).toEqual([128, 128, 384, 512])
+  it('gives AAC rate to spare: 128k mono, 256k stereo, 64k per channel above', () => {
+    expect([1, 2, 6, 8].map(aacBitrateKbps)).toEqual([128, 256, 384, 512])
+  })
+})
+
+describe('copying the source video', () => {
+  const copy = { ...options, copyVideo: { maxBitrateKbps: 12_000 } }
+
+  it('copies 8-bit 4:2:0 H.264 SDR that fits under the ceiling, and nothing else', () => {
+    expect(canCopyVideo(source(), 12_000)).toBe(true)
+    expect(canCopyVideo(source({ pixelFormat: 'yuvj420p' }), 12_000)).toBe(true)
+    expect(canCopyVideo(source({ bitrate: 13_000_000 }), 12_000)).toBe(false)
+    expect(canCopyVideo(source({ bitrate: null }), 12_000)).toBe(false)
+    expect(canCopyVideo(source({ codec: 'hevc' }), 12_000)).toBe(false)
+    expect(canCopyVideo(source({ pixelFormat: 'yuv420p10le' }), 12_000)).toBe(false)
+    // An 8-bit H.264 HLG capture would be an HDR copy next to a tone-mapped step
+    const hlg = { transfer: 'hlg' as const, colorTransfer: 'arib-std-b67', colorPrimaries: 'bt2020', colorSpace: 'bt2020nc', peakNits: 1000, dolbyVisionProfile: null }
+    expect(canCopyVideo(source({ hdr: hlg }), 12_000)).toBe(false)
+  })
+
+  it('publishes the source as "original" plus the smallest rung, keyframes aligned to the source', () => {
+    const plan = planEncode(source(), copy)
+    expect(plan.renditions).toEqual([
+      { label: COPY_LABEL, width: 1920, height: 800, maxBitrateKbps: 8000, gopFrames: 144, copy: true },
+      { label: '480p', width: 854, height: 356, maxBitrateKbps: 1500, gopFrames: 144 }
+    ])
+    expect(plan.keyframes).toBe('source')
+    expect(plan.skipped.filter((s) => s.kind === 'rendition').map((s) => s.id)).toEqual(['2160p', '1080p', '720p'])
+  })
+
+  it('copies alone when the step would not really go down, or there is no height for it', () => {
+    // 1.5 Mbps is more than 60 % of a 2 Mbps source: a worse copy nobody needs
+    const slow = planEncode(source({ bitrate: 2_000_000 }), copy)
+    expect(slow.renditions.map((r) => r.label)).toEqual([COPY_LABEL])
+    expect(slow.skipped.find((s) => s.id === '480p')?.reason).toMatch(/no bajaría de verdad/)
+    const small = planEncode(source({ width: 854, height: 480, displayWidth: 854, displayHeight: 480, bitrate: 4_000_000 }), copy)
+    expect(small.renditions.map((r) => r.label)).toEqual([COPY_LABEL])
+  })
+
+  it('leaves the ladder alone when copying is not configured or does not apply', () => {
+    expect(planEncode(source(), options).renditions.map((r) => r.label)).toEqual(['1080p', '720p', '480p'])
+    expect(planEncode(source(), options).keyframes).toBeUndefined()
+    expect(planEncode(source({ codec: 'hevc' }), copy).renditions.map((r) => r.label)).toEqual(['1080p', '720p', '480p'])
+  })
+
+  it('aligns new rungs of a copied title to the source keyframes', () => {
+    const plan = planEncode(source(), { ...options, qualities: ['360p'], alignToSourceKeyframes: true, allowNativeFallback: false })
+    expect(plan.renditions.map((r) => r.label)).toEqual(['360p'])
+    expect(plan.keyframes).toBe('source')
   })
 })

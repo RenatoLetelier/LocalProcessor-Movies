@@ -1,4 +1,5 @@
 import type { Rung, Standard } from '@shared/config'
+import type { TrackOverrides } from '@shared/model'
 import type { EncoderKind } from './encoders'
 
 export interface Binaries {
@@ -52,6 +53,9 @@ export interface SourceAudio {
   language: string | null
   title: string | null
   isDefault: boolean
+  // channelConfiguration of an AAC AudioSpecificConfig (0 = layout described by a PCE);
+  // null for other codecs and for AAC without extradata (ADTS)
+  aacChannelConfig: number | null
 }
 
 export interface SourceSubtitle {
@@ -99,6 +103,8 @@ export interface RenditionPlan {
   gopFrames: number
   // Set when no configured rung applied and the source is served at its own size
   nativeFallback?: true
+  // The source video stream as is, not re-encoded: zero loss and seconds of work
+  copy?: true
 }
 
 export type AudioAction = 'copy' | 'transcode'
@@ -145,6 +151,9 @@ export interface EncodePlan {
   // Text subtitles converted to WebVTT; image subtitles end up in `skipped`
   subtitles: SubtitlePlan[]
   skipped: SkippedItem[]
+  // 'source': encoded renditions put their keyframes where the source has them, so they
+  // cut on the same boundaries as a copied rendition; otherwise a fixed GOP per segment
+  keyframes?: 'source'
 }
 
 export interface PlanOptions {
@@ -156,6 +165,10 @@ export interface PlanOptions {
   subtitleIndexes?: number[]
   // Incremental jobs must not invent a native rung when the requested one does not apply
   allowNativeFallback?: boolean
+  // Copy the source video when browsers already decode it and it fits under this bitrate
+  copyVideo?: { maxBitrateKbps: number }
+  // Title that already publishes a copied rendition: new rungs must align to its keyframes
+  alignToSourceKeyframes?: boolean
 }
 
 export type PipelineStep = 'probe' | 'plan' | 'encode' | 'package' | 'publish'
@@ -180,6 +193,8 @@ export interface PipelineInput {
   // Full reprocess of a published title: the new package replaces the old folder
   replaceExisting?: boolean
   videoEncoder?: VideoEncoderOptions
+  // Names, languages and default tracks decided outside, over what the source says
+  trackOverrides?: TrackOverrides | null
 }
 
 export interface VideoEncoderOptions {
@@ -224,6 +239,7 @@ export interface IncrementalInput {
   subtitleIndexes: number[]
   externalTracks: ExternalTrack[]
   videoEncoder?: VideoEncoderOptions
+  trackOverrides?: TrackOverrides | null
 }
 
 export interface TitleMetadata {
@@ -263,6 +279,8 @@ export interface MetadataRendition {
   maxBitrate: number
   codec: string
   path: string
+  // The source video stream packaged as is, not re-encoded
+  copied?: boolean
 }
 
 export interface MetadataAudioTrack {
@@ -275,6 +293,10 @@ export interface MetadataAudioTrack {
   // Stream index in the source (negative for external files) and its codec there
   sourceIndex: number
   sourceCodec: string
+  // The track players pick without being asked: DEFAULT=YES in HLS, Role main in DASH
+  default?: boolean
+  // What the source said, kept while an override (a name from a catalog) replaces it
+  original?: TrackLabel
 }
 
 export interface MetadataSubtitleTrack {
@@ -286,4 +308,16 @@ export interface MetadataSubtitleTrack {
   path: string
   sourceIndex: number
   sourceFormat: string
+  default?: boolean
+  original?: TrackLabel
+}
+
+// How a published track is presented to players. Rewritten in place over the
+// manifests and metadata.json, without touching a single segment.
+export interface TrackLabel {
+  name: string
+  language: string
+  default: boolean
+  // Subtitles only
+  forced?: boolean
 }

@@ -121,8 +121,11 @@ describe('POST /titles', () => {
     expect(files.json()).toMatchObject({
       root: join(root, title.id),
       exists: true,
-      fileCount: 1,
-      entries: [{ name: 'metadata.json', kind: 'file', fileCount: 1 }]
+      fileCount: 2,
+      entries: [
+        { name: 'master.m3u8', kind: 'file', fileCount: 1 },
+        { name: 'metadata.json', kind: 'file', fileCount: 1 }
+      ]
     })
   })
 

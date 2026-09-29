@@ -107,9 +107,10 @@ describe('buildFfmpegArgs with an HDR source', () => {
     }
   }
   const toneMap =
-    'zscale=tin=smpte2084:pin=bt2020:min=bt2020nc:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0:peak=4.49,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
+    'zscale=tin=smpte2084:pin=bt2020:min=bt2020nc:t=linear:npl=100:p=bt709,format=gbrpf32le,tonemap=tonemap=mobius:desat=0:peak=4.49,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,' +
+    'sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL'
 
-  it('tone-maps once before the split, with the peak from the source metadata', () => {
+  it('tone-maps once, on frames reduced to the largest rendition, before the split', () => {
     expect(hdrToSdrFilter(hdr.video.hdr!)).toBe(toneMap)
     const multi: EncodePlan = {
       ...plan,
@@ -119,13 +120,13 @@ describe('buildFfmpegArgs with an HDR source', () => {
       ]
     }
     const { args: multiArgs } = buildFfmpegArgs(hdr, multi, 'enc')
-    expect(window(multiArgs, '-filter_complex')[0]).toMatch(new RegExp(`^\\[0:0\\]${toneMap.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},split=2`))
+    expect(window(multiArgs, '-filter_complex')[0]!.startsWith(`[0:0]scale=1920:800:flags=bicubic,setsar=1,${toneMap},split=2[s_1080p][s_720p];`)).toBe(true)
     expect(multiArgs.join(' ').match(/zscale=tin/g)).toHaveLength(1)
   })
 
   it('tone-maps inside -vf for a single rendition, leaving the colour tagging to zscale', () => {
     const { args } = buildFfmpegArgs(hdr, plan, 'enc')
-    expect(window(args, '-vf')).toEqual([`${toneMap},scale=1280:534:flags=bicubic,setsar=1`])
+    expect(window(args, '-vf')).toEqual([`scale=1280:534:flags=bicubic,setsar=1,${toneMap}`])
     expect(args.join(' ')).not.toMatch(/-color_primaries|-color_trc|-colorspace/)
   })
 
@@ -144,6 +145,58 @@ describe('buildFfmpegArgs with an HDR source', () => {
     expect(withDub.slice(0, withDub.indexOf('C:/in/dub.m4a') + 1)).toEqual(expect.arrayContaining(['-hwaccel', 'cuda', '-i', 'C:/in/movie.mkv', '-i', 'C:/in/dub.m4a']))
     expect(withDub.filter((a) => a === '-hwaccel')).toHaveLength(1)
     expect(buildFfmpegArgs(hdr, plan, 'enc', { kind: 'libx264' }).args).not.toContain('-hwaccel')
+  })
+})
+
+describe('buildFfmpegArgs with a copied source video', () => {
+  const copied: EncodePlan = {
+    ...plan,
+    keyframes: 'source',
+    renditions: [
+      { label: 'original', width: 1920, height: 800, maxBitrateKbps: 8000, gopFrames: 144, copy: true },
+      { label: '480p', width: 854, height: 356, maxBitrateKbps: 1500, gopFrames: 144 }
+    ]
+  }
+
+  it('takes the copy straight from the demuxer by absolute index, with no filter', () => {
+    const { args, outputs } = buildFfmpegArgs(source, copied, 'enc', { preset: 'veryfast' })
+    const text = args.join(' ')
+    expect(text).toMatch(/-map 0:0 -c:v copy -an -sn -dn -map_metadata -1 -f mp4 \S*video_original\.mp4/)
+    expect(text).toContain('-map 0:0 -vf scale=854:356:flags=bicubic,setsar=1 -c:v libx264')
+    expect(args).not.toContain('-filter_complex')
+    expect(outputs.video.map((v) => v.label)).toEqual(['original', '480p'])
+  })
+
+  it('puts the keyframes of the encoded step where the source has them and nowhere else', () => {
+    const { args } = buildFfmpegArgs(source, copied, 'enc', { preset: 'veryfast' })
+    expect(window(args, '-force_key_frames')).toEqual(['source'])
+    expect(window(args, '-g')).toEqual(['9999'])
+    expect(window(args, '-sc_threshold')).toEqual(['0'])
+    // A CFR conversion would move frames around the keyframes of the copy
+    expect(args).not.toContain('-r')
+    expect(args).not.toContain('-keyint_min')
+  })
+
+  it('makes a forced keyframe an IDR on Quick Sync, where a segment can start', () => {
+    const qsv = buildFfmpegArgs(source, copied, 'enc', { kind: 'h264_qsv' }).args
+    expect(window(qsv, '-forced_idr')).toEqual(['1'])
+    expect(buildFfmpegArgs(source, plan, 'enc', { kind: 'h264_qsv' }).args).not.toContain('-forced_idr')
+  })
+
+  it('splits only the encoded renditions when there are several next to the copy', () => {
+    const two: EncodePlan = { ...copied, renditions: [...copied.renditions, { label: '360p', width: 640, height: 266, maxBitrateKbps: 800, gopFrames: 144 }] }
+    const { args } = buildFfmpegArgs(source, two, 'enc')
+    expect(window(args, '-filter_complex')).toEqual([
+      '[0:0]split=2[s_480p][s_360p];[s_480p]scale=854:356:flags=bicubic,setsar=1[v_480p];[s_360p]scale=640:266:flags=bicubic,setsar=1[v_360p]'
+    ])
+    expect(args.join(' ')).toContain('-map 0:0 -c:v copy')
+  })
+
+  it('strips ADTS headers from a copied AAC and leaves Dolby copies alone', () => {
+    const text = buildFfmpegArgs(source, plan, 'enc').args.join(' ')
+    expect(text).toContain('-map 0:1 -c:a copy -bsf:a aac_adtstoasc')
+    const dolby: EncodePlan = { ...plan, audio: [{ ...plan.audio[0]!, sourceCodec: 'ac3', outputCodec: 'ac3' }] }
+    expect(buildFfmpegArgs(source, dolby, 'enc').args.join(' ')).not.toContain('aac_adtstoasc')
   })
 })
 

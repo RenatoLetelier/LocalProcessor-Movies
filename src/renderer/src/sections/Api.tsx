@@ -34,6 +34,7 @@ const ENDPOINTS: { method: string; path: string; description: string }[] = [
   { method: 'GET', path: '/titles/:id/files', description: 'Árbol de archivos publicado con tamaños' },
   { method: 'POST', path: '/titles/:id/reprocess', description: '{ tipo: "agregar_calidad" | "agregar_pista" | "reprocesar_completo", … }' },
   { method: 'PUT', path: '/titles/:id/source', description: 'Vincula el archivo de origen de un título: { sourcePath }' },
+  { method: 'PUT', path: '/titles/:id/tracks', description: 'Nombres, idiomas y pista predeterminada por sourceIndex: { audio?, subtitles? }; {} vuelve a los del origen' },
   { method: 'DELETE', path: '/titles/:id', description: 'Elimina el título, su carpeta y el archivo subido (si lo hubo)' },
   { method: 'POST', path: '/titles/import', description: 'Importa los títulos publicados en la carpeta de salida que no estén en la biblioteca' },
   { method: 'GET', path: '/jobs', description: 'Jobs activos; ?status=all para el historial completo' },

@@ -1,4 +1,5 @@
 import type { AppConfig, Rung, Standard } from '@shared/config'
+import type { PlanOptions } from '@pipeline/types'
 import { validateConfig } from '@shared/config-validate'
 import { badRequest, conflict } from '../errors'
 
@@ -10,6 +11,9 @@ export interface JobConfig {
   rungs: Record<string, Rung>
   segmentDurationSeconds: number
   encoder: AppConfig['encoder']
+  // Absent in jobs queued before 1.3.0: those encode, as they did
+  copyVideo?: boolean
+  copyVideoMaxKbps?: number
 }
 
 export interface ConfigOverrides {
@@ -35,7 +39,18 @@ export function snapshotJobConfig(global: AppConfig, overrides: ConfigOverrides 
     qualities: merged.qualities,
     rungs: structuredClone(merged.rungs),
     segmentDurationSeconds: merged.segmentDurationSeconds,
-    encoder: merged.encoder
+    encoder: merged.encoder,
+    copyVideo: merged.copyVideo,
+    copyVideoMaxKbps: merged.copyVideoMaxKbps
+  }
+}
+
+export function planOptionsOf(config: JobConfig): PlanOptions {
+  return {
+    rungs: config.rungs,
+    qualities: config.qualities,
+    segmentDurationSeconds: config.segmentDurationSeconds,
+    ...(config.copyVideo && config.copyVideoMaxKbps ? { copyVideo: { maxBitrateKbps: config.copyVideoMaxKbps } } : {})
   }
 }
 

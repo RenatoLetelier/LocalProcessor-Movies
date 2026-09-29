@@ -32,6 +32,8 @@ const configPatchSchema = {
       additionalProperties: rungSchema
     },
     segmentDurationSeconds: { type: 'integer', minimum: SEGMENT_DURATION_RANGE.min, maximum: SEGMENT_DURATION_RANGE.max },
+    copyVideo: { type: 'boolean' },
+    copyVideoMaxKbps: { type: 'integer', minimum: 1 },
     encoder: { type: 'string', enum: ['auto', 'software'] },
     maxConcurrentJobs: { anyOf: [{ type: 'string', enum: ['auto'] }, { type: 'integer', minimum: 1, maximum: 16 }] },
     // apiToken is deliberately absent: the app generates it (POST /config/api-token)

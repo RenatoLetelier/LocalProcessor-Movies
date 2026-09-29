@@ -6,6 +6,7 @@ import { commandEvent, emit, encodedEvent, externalsEvent, planEvents, published
 import { buildFfmpegArgs, extractSubtitles, runFfmpeg, type EncodeOutputs } from './ffmpeg'
 import { DASH_MANIFEST, MASTER_PLAYLIST, METADATA_FILE, WORK_DIR, audioDir, renditionDir, subtitleDir } from './layout'
 import { measureBandwidth, mergeMasterPlaylists, mergeMetadata, mergeMpds, replaceFileAtomic } from './manifests'
+import { applyTrackLabels } from './labels'
 import { buildMetadata, writeJsonAtomic } from './metadata'
 import { ENC_DIR, PKG_DIR, buildPackagerArgs, runPackager } from './packager'
 import { planEncode, planExternalTrack, unsupportedSourceReason } from './plan'
@@ -118,8 +119,9 @@ export async function processTitle(
     const outputs = await encode(binaries, source, plan, dirs, input, hooks, report)
     await packageStreams(binaries, source, plan, dirs, input.standards, true, hooks, report)
 
-    const metadata = await buildMetadata({ titleId: input.titleId, name: input.name, standards: input.standards, source, plan, outputs })
-    await writeJsonAtomic(join(dirs.pkgDir, METADATA_FILE), metadata)
+    await writeJsonAtomic(join(dirs.pkgDir, METADATA_FILE), await buildMetadata({ titleId: input.titleId, name: input.name, standards: input.standards, source, plan, outputs }))
+    // Names and defaults settled before the folder is visible, overrides included
+    const metadata = await applyTrackLabels(dirs.pkgDir, input.trackOverrides)
 
     report('publish', 0)
     await mkdir(dirname(finalDir), { recursive: true })
@@ -159,14 +161,16 @@ export async function addToTitle(
     if (externalsInfo) emit(hooks, externalsInfo)
 
     report('plan')
-    // Same GOP as the published segments: the actual segment length is gop / fps exactly
+    // Same GOP as the published segments: the actual segment length is gop / fps exactly.
+    // Next to a copied rendition, the keyframes of the copy instead.
     const plan = planEncode(source, {
       rungs: input.rungs,
       qualities: input.qualities,
       segmentDurationSeconds: published.segmentDurationSeconds,
       audioIndexes: input.audioIndexes,
       subtitleIndexes: input.subtitleIndexes,
-      allowNativeFallback: false
+      allowNativeFallback: false,
+      alignToSourceKeyframes: published.renditions.some((r) => r.copied)
     })
     addExternalTracks(plan, input.externalTracks, externals)
     assertIncrementalPlan(plan, input, published)
@@ -198,8 +202,8 @@ export async function addToTitle(
       const merged = mergeMpds(await readFile(join(titleDir, DASH_MANIFEST), 'utf8'), await readFile(join(dirs.pkgDir, DASH_MANIFEST), 'utf8'))
       await replaceFileAtomic(join(titleDir, DASH_MANIFEST), merged)
     }
-    const metadata = mergeMetadata(published, addition)
-    await replaceFileAtomic(join(titleDir, METADATA_FILE), JSON.stringify(metadata, null, 2) + '\n')
+    await replaceFileAtomic(join(titleDir, METADATA_FILE), JSON.stringify(mergeMetadata(published, addition), null, 2) + '\n')
+    const metadata = await applyTrackLabels(titleDir, input.trackOverrides)
     await discardWorkDirs(dirs)
     emit(hooks, {
       level: 'info',

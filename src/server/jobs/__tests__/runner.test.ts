@@ -17,7 +17,8 @@ let received: ServerEvent[]
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'lp-runner-'))
   db = openDatabase(':memory:')
-  db.repos.settings.updateConfig({ outputFolder: root })
+  // The fake source is copyable H.264: these tests exercise the ladder
+  db.repos.settings.updateConfig({ outputFolder: root, copyVideo: false })
   events = new ServerEvents()
   received = []
   events.subscribe((e) => received.push(e))

@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { Job, Title } from '@shared/model'
+import type { Job, Title, TrackOverrides } from '@shared/model'
 import { planEncode, unsupportedSourceReason } from '@pipeline/plan'
 import { ProbeError, probeSource } from '@pipeline/probe'
 import { ProcessError } from '@pipeline/exec'
@@ -9,10 +9,11 @@ import type { Binaries, SourceInfo } from '@pipeline/types'
 import type { Repositories } from '../db/repositories'
 import type { TitlePatch } from '../db/repositories/titles'
 import { badRequest, conflict } from '../errors'
-import { snapshotJobConfig, type ConfigOverrides } from './config'
+import { planOptionsOf, snapshotJobConfig, type ConfigOverrides } from './config'
 import { estimatePeakBytes, formatBytes, freeBytes } from './estimate'
 import type { ServerEvents } from './events'
 import { sourceHash } from './source-hash'
+import { parseTrackOverrides } from './track-overrides'
 
 export type Prober = (binaries: Binaries, path: string) => Promise<SourceInfo>
 
@@ -44,6 +45,8 @@ export interface EnqueueInput {
   titleId?: string
   name?: string
   overrides?: ConfigOverrides
+  // Names, languages and default tracks the consumer wants over the source's
+  trackOverrides?: TrackOverrides | null
 }
 
 // POST /titles without the HTTP: validates, probes, checks disk and creates the
@@ -76,8 +79,12 @@ export async function enqueueTitle(deps: EnqueueDeps, input: EnqueueInput): Prom
 
   const unsupported = unsupportedSourceReason(source)
   if (unsupported) throw badRequest(`El archivo no se puede procesar: ${unsupported}`)
+  const trackOverrides = parseTrackOverrides(input.trackOverrides, {
+    audio: source.audio.map((a) => a.index),
+    subtitles: source.subtitles.map((s) => s.index)
+  })
 
-  const plan = planEncode(source, config)
+  const plan = planEncode(source, planOptionsOf(config))
   if (deps.checkDiskSpace !== false) {
     const required = estimatePeakBytes(source, plan)
     const free = await freeBytes(config.outputFolder)
@@ -97,7 +104,11 @@ export async function enqueueTitle(deps: EnqueueDeps, input: EnqueueInput): Prom
     source_managed: input.sourceManaged ?? false,
     output_folder: join(config.outputFolder, id)
   })
-  const title = repos.titles.update(id, { source_hash: await sourceHash(input.sourcePath), ...sourceFields(source) })!
+  const title = repos.titles.update(id, {
+    source_hash: await sourceHash(input.sourcePath),
+    ...sourceFields(source),
+    ...(trackOverrides ? { track_overrides: trackOverrides } : {})
+  })!
   const job = repos.jobs.create({ title_id: id, tipo: 'inicial', config })
 
   events.emit({ type: 'title.updated', title })

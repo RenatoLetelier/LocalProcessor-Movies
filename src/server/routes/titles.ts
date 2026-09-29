@@ -11,6 +11,7 @@ import { linkSource } from '../jobs/link-source'
 import { saveUpload, uploadPath } from '../jobs/uploads'
 import { readFolderTree } from '../jobs/folder-tree'
 import { enqueueReprocess, type ReprocessRequest } from '../jobs/reprocess'
+import { parseTrackOverrides, relabelTitle } from '../jobs/track-overrides'
 import { parseJobConfig } from '../jobs/config'
 import { formatBytes } from '../logging/format'
 
@@ -20,13 +21,16 @@ interface CreateTitleBody {
   standards?: unknown
   qualities?: unknown
   segmentDurationSeconds?: unknown
+  // { audio?, subtitles? } in JSON; a JSON string in a multipart field
+  tracks?: unknown
 }
 
 export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = async (app, { context }) => {
   const { repos, runner, events, log } = context
 
-  // JSON: { sourcePath, name?, standards?, qualities?, segmentDurationSeconds? }
-  // multipart: file part "file" plus the same fields as text parts (lists comma-separated)
+  // JSON: { sourcePath, name?, standards?, qualities?, segmentDurationSeconds?, tracks? }
+  // multipart: file part "file" plus the same fields as text parts (lists comma-separated,
+  // tracks as a JSON string)
   app.post('/titles', async (request, reply) => {
     const uploaded = request.isMultipart()
     const { title, job } = uploaded ? await createFromUpload(request) : await createFromPath(request)
@@ -57,7 +61,8 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     return enqueueTitle(context, {
       sourcePath: body.sourcePath,
       name: optionalString(body.name, 'name'),
-      overrides: parseOverrides(body)
+      overrides: parseOverrides(body),
+      trackOverrides: parseTrackOverrides(body.tracks)
     })
   }
 
@@ -83,6 +88,13 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
       }
     }
     if (!savedPath) throw badRequest('Falta el archivo (campo "file")')
+    let trackOverrides: ReturnType<typeof parseTrackOverrides>
+    try {
+      trackOverrides = parseTrackOverrides(typeof fields.tracks === 'string' && fields.tracks !== '' ? JSON.parse(fields.tracks) : undefined)
+    } catch (error) {
+      await rm(savedPath, { force: true })
+      throw error instanceof HttpError ? error : badRequest('tracks debe ser JSON')
+    }
 
     try {
       return await enqueueTitle(context, {
@@ -90,7 +102,8 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
         sourcePath: savedPath,
         sourceManaged: true,
         name: optionalString(fields.name, 'name') ?? originalName?.replace(/\.[^.]+$/, ''),
-        overrides: parseOverrides(fields)
+        overrides: parseOverrides(fields),
+        trackOverrides
       })
     } catch (error) {
       await rm(savedPath, { force: true })
@@ -168,6 +181,28 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
       context: { outputFolder: title.output_folder, sourcePath: title.source_path, uploadRemoved, cancelledJobs: cancelled, jobsRemoved: jobs.length }
     })
     return reply.code(204).send()
+  })
+
+  // Names, languages and default tracks decided by the consumer (a catalog), over what
+  // the source says. Replaces the whole set; {} goes back to the source. A published
+  // title is relabelled on the spot, manifests and metadata.json only, no segment
+  // touched; otherwise the job that publishes it applies them.
+  app.put<{ Params: { id: string }; Body: unknown }>('/titles/:id/tracks', async (request) => {
+    const title = repos.titles.get(request.params.id)
+    if (!title) throw notFound('Título no encontrado')
+    // Before its first job finishes a title has no track rows to check the indexes against
+    const audio = repos.audioTracks.listByTitle(title.id).map((a) => a.source_index)
+    const subtitles = repos.subtitleTracks.listByTitle(title.id).map((s) => s.source_index)
+    const known = audio.length + subtitles.length > 0 ? { audio, subtitles } : undefined
+    const overrides = parseTrackOverrides(request.body ?? {}, known)
+    const updated = repos.titles.update(title.id, { track_overrides: overrides })!
+    const metadata = await relabelTitle(title.id, title.output_folder, overrides)
+    events.emit({ type: 'title.updated', title: updated })
+    log.info('titles', `Pistas de «${title.name}» ${overrides ? 'redefinidas' : 'devueltas a las del origen'}${metadata ? '' : ' (se aplicarán al publicar)'}`, {
+      titleId: title.id,
+      context: { overrides, applied: metadata !== null, ip: request.ip }
+    })
+    return { title: updated, applied: metadata !== null, metadata }
   })
 
   // { tipo: 'agregar_calidad', qualities } | { tipo: 'agregar_pista', audio?, subtitles?, files? } |

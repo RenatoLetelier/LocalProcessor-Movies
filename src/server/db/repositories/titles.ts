@@ -25,6 +25,7 @@ const MUTABLE_COLUMNS = [
   'source_hdr',
   'duration_seconds',
   'output_folder',
+  'track_overrides',
   'status',
   'error',
   'updated_at'
@@ -49,11 +50,11 @@ export function createTitlesRepository(db: DatabaseSync): TitlesRepository {
   const selectAll = db.prepare('SELECT * FROM titles ORDER BY created_at DESC')
   const deleteById = db.prepare('DELETE FROM titles WHERE id = ?')
 
-  // SQLite has no boolean type: source_managed travels as 0/1
+  // SQLite has no boolean type: source_managed travels as 0/1, and the overrides as JSON
   const fromRow = (row: unknown): Title | undefined => {
     if (!row) return undefined
-    const raw = row as Omit<Title, 'source_managed'> & { source_managed: number }
-    return { ...raw, source_managed: raw.source_managed === 1 }
+    const raw = row as Omit<Title, 'source_managed' | 'track_overrides'> & { source_managed: number; track_overrides: string | null }
+    return { ...raw, source_managed: raw.source_managed === 1, track_overrides: raw.track_overrides ? (JSON.parse(raw.track_overrides) as Title['track_overrides']) : null }
   }
   const get = (id: string): Title | undefined => fromRow(selectById.get(id))
 

@@ -1,3 +1,4 @@
+import { aacChannelConfiguration, parseHexdump } from './aac'
 import { capture } from './exec'
 import type { Binaries, Fraction, HdrTransfer, SourceAudio, SourceHdr, SourceInfo, SourceSubtitle, SourceVideo } from './types'
 
@@ -35,6 +36,8 @@ export interface FfprobeStream {
   disposition?: Record<string, number>
   tags?: Record<string, string>
   side_data_list?: FfprobeSideData[]
+  // Hexdump, only with -show_data
+  extradata?: string
 }
 
 export interface FfprobeSideData {
@@ -59,6 +62,7 @@ export async function probeSource(binaries: Binaries, path: string, signal?: Abo
   const info = parseProbeOutput(await runProbe(binaries, path, signal), path)
   // HDR static metadata travels with the frames, not the stream: decode the first one
   if (info.video.hdr) info.video.hdr.peakNits = parseHdrPeak(await runFrameProbe(binaries, path, info.video.index, signal))
+  await readAacChannelConfigs(binaries, path, info.audio, signal)
   return info
 }
 
@@ -73,10 +77,29 @@ export async function probeTrackFile(binaries: Binaries, path: string, signal?: 
   const output = await runProbe(binaries, path, signal)
   const streams = output.streams ?? []
   const authoredDefault = hasAuthoredSubtitleDefault(output.format?.format_name)
+  const audio = streams.filter((s) => s.codec_type === 'audio').map(parseAudio)
+  await readAacChannelConfigs(binaries, path, audio, signal)
   return {
     path,
-    audio: streams.filter((s) => s.codec_type === 'audio').map(parseAudio),
+    audio,
     subtitles: streams.filter((s) => s.codec_type === 'subtitle').map((s) => parseSubtitle(s, authoredDefault))
+  }
+}
+
+// Whether a source AAC can be copied depends on its channelConfiguration, which only
+// the extradata carries. A second run limited to the audio streams: -show_data on the
+// main one would also hexdump the attachments of an MKV (a 1 MB font is 4 MB of text).
+async function readAacChannelConfigs(binaries: Binaries, path: string, audio: SourceAudio[], signal?: AbortSignal): Promise<void> {
+  if (!audio.some((a) => a.codec === 'aac')) return
+  const json = await capture(
+    binaries.ffprobe,
+    ['-v', 'error', '-print_format', 'json', '-select_streams', 'a', '-show_entries', 'stream=index,codec_name,extradata', '-show_data', path],
+    { signal }
+  )
+  for (const stream of (JSON.parse(json) as FfprobeOutput).streams ?? []) {
+    if (stream.codec_name !== 'aac' || !stream.extradata) continue
+    const track = audio.find((a) => a.index === stream.index)
+    if (track) track.aacChannelConfig = aacChannelConfiguration(parseHexdump(stream.extradata))
   }
 }
 
@@ -172,11 +195,17 @@ function parseHdr(stream: FfprobeStream): SourceHdr | null {
   return {
     transfer,
     colorTransfer,
-    colorPrimaries: stream.color_primaries ?? 'bt2020',
-    colorSpace: stream.color_space ?? 'bt2020nc',
+    colorPrimaries: signalled(stream.color_primaries) ?? 'bt2020',
+    colorSpace: signalled(stream.color_space) ?? 'bt2020nc',
     peakNits: DEFAULT_HDR_PEAK_NITS,
     dolbyVisionProfile: typeof dolby?.dv_profile === 'number' ? dolby.dv_profile : null
   }
+}
+
+// zscale aborts with "no path between colorspaces" on an input declared unknown,
+// and losing an hours-long job to a missing tag is worse than assuming BT.2020
+function signalled(value: string | undefined): string | undefined {
+  return value && !['unknown', 'unspecified', 'reserved'].includes(value) ? value : undefined
 }
 
 // MaxCLL is the brightest pixel actually in the content; the mastering display
@@ -222,7 +251,8 @@ function parseAudio(stream: FfprobeStream): SourceAudio {
     bitrate: toInt(stream.bit_rate) ?? toInt(stream.tags?.BPS) ?? toInt(stream.tags?.['BPS-eng']),
     language: normalizeTag(stream.tags?.language),
     title: normalizeTag(stream.tags?.title),
-    isDefault: stream.disposition?.default === 1
+    isDefault: stream.disposition?.default === 1,
+    aacChannelConfig: null
   }
 }
 

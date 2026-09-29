@@ -5,6 +5,9 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import type { FastifyInstance } from 'fastify'
 import type { Binaries, IncrementalInput, PipelineHooks, PipelineInput, PipelineResult, SourceInfo } from '@pipeline/types'
 import { planEncode, planExternalTrack } from '@pipeline/plan'
+import { applyTrackLabels } from '@pipeline/labels'
+import { audioDir, audioGroupId, subtitleDir } from '@pipeline/layout'
+import { buildMetadata } from '@pipeline/metadata'
 import type { TrackFileInfo } from '@pipeline/probe'
 import type { HardwareInfo } from '@pipeline/hardware'
 import { createServer } from '../..'
@@ -37,8 +40,8 @@ export const fakeSource = (path: string, over: Partial<SourceInfo['video']> = {}
     ...over
   },
   audio: [
-    { index: 1, codec: 'aac', channels: 2, channelLayout: 'stereo', sampleRate: 48000, bitrate: 128000, language: 'spa', title: null, isDefault: true },
-    { index: 2, codec: 'dts', channels: 6, channelLayout: '5.1', sampleRate: 48000, bitrate: null, language: 'eng', title: 'Comentarios', isDefault: false }
+    { index: 1, codec: 'aac', channels: 2, channelLayout: 'stereo', sampleRate: 48000, bitrate: 128000, language: 'spa', title: null, isDefault: true, aacChannelConfig: 2 },
+    { index: 2, codec: 'dts', channels: 6, channelLayout: '5.1', sampleRate: 48000, bitrate: null, language: 'eng', title: 'Comentarios', isDefault: false, aacChannelConfig: null }
   ],
   subtitles: [
     { index: 3, codec: 'hdmv_pgs_subtitle', language: 'spa', title: null, isForced: false, isDefault: false, isImage: true },
@@ -56,7 +59,7 @@ export const fakeProbeTracks = async (_binaries: Binaries, path: string): Promis
   const dolby = path.endsWith('.eac3')
   return {
     path,
-    audio: [{ index: 0, codec: dolby ? 'eac3' : 'aac', channels: dolby ? 6 : 2, channelLayout: dolby ? '5.1' : 'stereo', sampleRate: 48000, bitrate: 128000, language: null, title: null, isDefault: false }],
+    audio: [{ index: 0, codec: dolby ? 'eac3' : 'aac', channels: dolby ? 6 : 2, channelLayout: dolby ? '5.1' : 'stereo', sampleRate: 48000, bitrate: 128000, language: null, title: null, isDefault: false, aacChannelConfig: dolby ? null : 2 }],
     subtitles: []
   }
 }
@@ -89,35 +92,29 @@ export function fakePipeline(options: FakePipelineOptions = {}): PipelineFn {
     if (fail) throw new Error(fail)
     hooks.onLog?.('fake pipeline done')
 
+    // metadata.json and an HLS master as the real pipeline writes them (no segments), labelled
+    // the same way, so relabelling works on them
     const outputFolder = join(input.outputRoot, input.titleId)
     mkdirSync(outputFolder, { recursive: true })
-    const metadata: PipelineResult['metadata'] = {
-      schemaVersion: 1,
-      titleId: input.titleId,
-      name: input.name,
-      durationSeconds: source.durationSeconds,
-      standards: input.standards,
-      manifests: { hls: 'master.m3u8' },
-      dynamicRange: { source: 'sdr', output: 'sdr' },
-      source: { path: input.sourcePath, sizeBytes: 1, width: 1920, height: 800, fps: 24, codec: 'h264', bitrate: null },
-      segmentDurationSeconds: plan.actualSegmentSeconds,
-      renditions: plan.renditions.map((r) => ({
-        label: r.label,
-        width: r.width,
-        height: r.height,
-        bitrate: r.maxBitrateKbps * 900,
-        maxBitrate: r.maxBitrateKbps * 1000,
-        codec: 'h264',
-        path: `video/${r.label}`
-      })),
-      audioTracks: [],
-      subtitleTracks: [],
-      updatedAt: new Date().toISOString()
-    }
-    writeFileSync(join(outputFolder, 'metadata.json'), JSON.stringify(metadata))
+    const built = await buildMetadata({ titleId: input.titleId, name: input.name, standards: input.standards, source, plan, outputs: { video: [], audio: [] } })
+    writeFileSync(join(outputFolder, 'metadata.json'), JSON.stringify({ ...built, manifests: { hls: 'master.m3u8' } }))
+    writeFileSync(join(outputFolder, 'master.m3u8'), fakeMaster(plan))
+    const metadata = await applyTrackLabels(outputFolder, input.trackOverrides)
     hooks.onProgress?.({ step: 'publish', percent: 100 })
     return { titleId: input.titleId, outputFolder, source, plan, metadata }
   }
+}
+
+function fakeMaster(plan: PipelineResult['plan']): string {
+  const lines = ['#EXTM3U', '#EXT-X-INDEPENDENT-SEGMENTS']
+  for (const a of plan.audio) {
+    lines.push(`#EXT-X-MEDIA:TYPE=AUDIO,URI="${audioDir(a)}/playlist.m3u8",GROUP-ID="${audioGroupId(a)}",LANGUAGE="${a.language}",NAME="${a.name}",DEFAULT=NO,AUTOSELECT=YES`)
+  }
+  for (const s of plan.subtitles) {
+    lines.push(`#EXT-X-MEDIA:TYPE=SUBTITLES,URI="${subtitleDir(s)}/playlist.m3u8",GROUP-ID="subs",LANGUAGE="${s.language}",NAME="${s.name}",DEFAULT=NO,AUTOSELECT=YES`)
+  }
+  for (const r of plan.renditions) lines.push(`#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=${r.width}x${r.height},AUDIO="audio-aac"`, `video/${r.label}/playlist.m3u8`)
+  return lines.join('\n') + '\n'
 }
 
 // Stand-in for addToTitle: plans the requested additions and returns them as done
@@ -177,7 +174,7 @@ export interface TestServer {
 }
 
 export async function createTestServer(
-  options: { pipeline?: PipelineFn; incremental?: IncrementalFn; outputFolder?: string; concurrency?: number; hardware?: HardwareInfo; probe?: Prober } = {}
+  options: { pipeline?: PipelineFn; incremental?: IncrementalFn; outputFolder?: string; concurrency?: number; hardware?: HardwareInfo; probe?: Prober; copyVideo?: boolean } = {}
 ): Promise<TestServer> {
   const db = openDatabase(':memory:')
   const events = new ServerEvents()
@@ -198,6 +195,8 @@ export async function createTestServer(
     jobOutput
   })
   if (options.outputFolder) db.repos.settings.updateConfig({ outputFolder: options.outputFolder })
+  // The fake source is copyable H.264: most tests exercise the ladder
+  db.repos.settings.updateConfig({ copyVideo: options.copyVideo ?? false })
   // As in production: recovery first, then the routes may notify()
   runner.start()
 

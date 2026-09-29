@@ -21,6 +21,10 @@ export async function buildMetadata(input: MetadataInput): Promise<TitleMetadata
   if (input.standards.includes('hls')) manifests.hls = MASTER_PLAYLIST
   if (input.standards.includes('dash')) manifests.dash = DASH_MANIFEST
 
+  // The pipeline's own choice; labels.ts may still move it when a consumer overrides it
+  const defaultAudio = (plan.audio.find((a) => a.isDefault) ?? plan.audio[0])?.sourceIndex
+  const defaultSubtitle = plan.subtitles.find((s) => s.isDefault && !s.forced)?.sourceIndex
+
   const renditions = await Promise.all(
     plan.renditions.map(async (rendition) => {
       const file = input.outputs.video.find((v) => v.label === rendition.label)?.file
@@ -32,7 +36,8 @@ export async function buildMetadata(input: MetadataInput): Promise<TitleMetadata
         bitrate: file ? await averageBitrate(file, source.durationSeconds) : rendition.maxBitrateKbps * 1000,
         maxBitrate: rendition.maxBitrateKbps * 1000,
         codec: VIDEO_CODEC_NAME,
-        path: renditionDir(rendition.label)
+        path: renditionDir(rendition.label),
+        ...(rendition.copy ? { copied: true } : {})
       }
     })
   )
@@ -64,7 +69,8 @@ export async function buildMetadata(input: MetadataInput): Promise<TitleMetadata
       channels: audio.channels,
       path: audioDir(audio),
       sourceIndex: audio.sourceIndex,
-      sourceCodec: audio.sourceCodec
+      sourceCodec: audio.sourceCodec,
+      default: audio.sourceIndex === defaultAudio
     })),
     subtitleTracks: plan.subtitles.map((subtitle) => ({
       id: subtitleTrackId(subtitle),
@@ -74,7 +80,8 @@ export async function buildMetadata(input: MetadataInput): Promise<TitleMetadata
       forced: subtitle.forced,
       path: subtitleDir(subtitle),
       sourceIndex: subtitle.sourceIndex,
-      sourceFormat: subtitle.sourceCodec
+      sourceFormat: subtitle.sourceCodec,
+      default: subtitle.sourceIndex === defaultSubtitle
     })),
     updatedAt: new Date().toISOString()
   }

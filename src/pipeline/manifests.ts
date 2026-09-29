@@ -13,7 +13,7 @@ import type { TitleMetadata } from './types'
 
 const VIDEO_CODEC_PREFIXES = ['avc1', 'avc3', 'hvc1', 'hev1', 'vp09', 'av01', 'dvh1', 'dvhe']
 
-interface HlsAttribute {
+export interface HlsAttribute {
   key: string
   value: string
   quoted: boolean
@@ -69,9 +69,9 @@ export function parseAttributes(text: string): HlsAttribute[] {
   return attributes
 }
 
-const attr = (list: HlsAttribute[], key: string): string | undefined => list.find((a) => a.key === key)?.value
+export const attr = (list: HlsAttribute[], key: string): string | undefined => list.find((a) => a.key === key)?.value
 
-function setAttr(list: HlsAttribute[], key: string, value: string, quoted: boolean): void {
+export function setAttr(list: HlsAttribute[], key: string, value: string, quoted: boolean): void {
   const existing = list.find((a) => a.key === key)
   if (existing) {
     existing.value = value
@@ -206,15 +206,17 @@ export async function measureBandwidth(playlistFile: string): Promise<StreamBand
 
 // ---------------------------------------------------------------- DASH MPD
 
-type XmlNode = Record<string, unknown> & { ':@'?: Record<string, string> }
+export type XmlNode = Record<string, unknown> & { ':@'?: Record<string, string> }
 
-const xmlOptions = { preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false, trimValues: false }
+// trimValues drops the indentation between tags: kept, the builder indents again around
+// it and every rewrite of the manifest adds blank lines
+export const xmlOptions = { preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '@_', parseTagValue: false, trimValues: true }
 
-function children(node: XmlNode, tag: string): XmlNode[] {
+export function children(node: XmlNode, tag: string): XmlNode[] {
   return (node[tag] as XmlNode[] | undefined) ?? []
 }
 
-function findChild(list: XmlNode[], tag: string): XmlNode | undefined {
+export function findChild(list: XmlNode[], tag: string): XmlNode | undefined {
   return list.find((n) => tag in n)
 }
 
@@ -284,11 +286,12 @@ export function mergeMetadata(existing: TitleMetadata, addition: TitleMetadata):
     const seen = new Set(list.map(key))
     return [...list, ...extra.filter((item) => !seen.has(key(item)))]
   }
+  // Tracks added later never take over as the default: the published title keeps its own
   return {
     ...existing,
     renditions: byKey(existing.renditions, addition.renditions, (r) => r.label),
-    audioTracks: byKey(existing.audioTracks, addition.audioTracks, (a) => a.id),
-    subtitleTracks: byKey(existing.subtitleTracks, addition.subtitleTracks, (s) => s.id),
+    audioTracks: byKey(existing.audioTracks, addition.audioTracks.map((a) => ({ ...a, default: false })), (a) => a.id),
+    subtitleTracks: byKey(existing.subtitleTracks, addition.subtitleTracks.map((s) => ({ ...s, default: false })), (s) => s.id),
     updatedAt: new Date().toISOString()
   }
 }

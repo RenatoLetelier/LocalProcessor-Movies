@@ -51,11 +51,16 @@ export function encoderFilterSuffix(kind: EncoderKind): string {
 
 // Every encoder gets the same contract: capped constant quality, fixed GOP with no
 // scene-cut keyframes, constant frame rate, High profile, 8-bit 4:2:0.
+//
+// Next to a copied rendition the keyframes go exactly where the source has them and
+// nowhere else, so both renditions cut on the same boundaries; the frame rate is left
+// alone for the same reason (a CFR conversion would move frames around them).
 export function videoCodecArgs(kind: EncoderKind, rendition: RenditionPlan, plan: EncodePlan, quality: QualityOptions): string[] {
   const { gopFrames, maxBitrateKbps } = rendition
+  const aligned = plan.keyframes === 'source'
   const cap = ['-maxrate', `${maxBitrateKbps}k`, '-bufsize', `${maxBitrateKbps * 2}k`]
-  const gop = ['-g', String(gopFrames), '-keyint_min', String(gopFrames)]
-  const rate = ['-r', `${plan.fps.num}/${plan.fps.den}`, '-fps_mode', 'cfr']
+  const gop = aligned ? ['-force_key_frames', 'source', '-g', '9999'] : ['-g', String(gopFrames), '-keyint_min', String(gopFrames)]
+  const rate = aligned ? [] : ['-r', `${plan.fps.num}/${plan.fps.den}`, '-fps_mode', 'cfr']
   const pixfmt = kind === 'h264_vaapi' ? [] : ['-pix_fmt', 'yuv420p']
 
   switch (kind) {
@@ -64,8 +69,10 @@ export function videoCodecArgs(kind: EncoderKind, rendition: RenditionPlan, plan
     case 'h264_nvenc':
       return ['-c:v', 'h264_nvenc', '-preset', 'p5', '-tune', 'hq', '-profile:v', 'high', ...pixfmt, '-rc', 'vbr', '-cq', String(quality.crf + 3), '-b:v', '0', ...cap, ...gop, '-no-scenecut', '1', '-forced-idr', '1', ...rate]
     case 'h264_qsv':
-      // global_quality + maxrate selects QVBR (quality-defined VBR under a ceiling)
-      return ['-c:v', 'h264_qsv', '-preset', 'slower', '-profile:v', 'high', ...pixfmt, '-global_quality', String(quality.crf + 3), '-b:v', `${maxBitrateKbps}k`, ...cap, ...gop, '-scenario', 'archive', ...rate]
+      // global_quality + maxrate selects QVBR (quality-defined VBR under a ceiling). A forced
+      // keyframe is a plain I frame for Quick Sync unless forced_idr says otherwise, and a
+      // segment can only start on an IDR.
+      return ['-c:v', 'h264_qsv', '-preset', 'slower', '-profile:v', 'high', ...pixfmt, '-global_quality', String(quality.crf + 3), '-b:v', `${maxBitrateKbps}k`, ...cap, ...gop, ...(aligned ? ['-forced_idr', '1'] : []), '-scenario', 'archive', ...rate]
     case 'h264_amf':
       return ['-c:v', 'h264_amf', '-usage', 'transcoding', '-quality', 'quality', '-profile:v', 'high', ...pixfmt, '-rc', 'vbr_peak', '-b:v', `${maxBitrateKbps}k`, ...cap, ...gop, ...rate]
     case 'h264_vaapi':

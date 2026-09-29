@@ -39,8 +39,13 @@ Los documentos de diseño (funcional y técnico) están en [`docs/`](docs/).
 - Empaqueta todo en **segmentos CMAF (fMP4)** y escribe `master.m3u8` (HLS),
   `manifest.mpd` (DASH) y un `metadata.json` que describe el título, para que
   el consumidor no tenga que parsear manifiestos.
-- **Conserva todas las pistas de audio** (AAC y Dolby se copian; el resto se
-  convierte a AAC) y **todos los subtítulos de texto** (convertidos a WebVTT).
+- **Copia el video cuando ya sirve**: un H.264 de 8 bits SDR que no supera el
+  tope configurado (12 Mbps por defecto) se publica tal cual como calidad
+  `original`, sin pérdida y en segundos; al lado se codifica solo la calidad
+  activa más baja, para conexiones lentas, con los cortes alineados.
+- **Conserva todas las pistas de audio** (AC-3/E-AC-3 y el AAC con layout
+  estándar se copian; el resto se convierte a AAC conservando los canales) y
+  **todos los subtítulos de texto** (convertidos a WebVTT).
 - Convierte los orígenes **HDR** (HDR10, HLG, Dolby Vision con base HDR10) a
   SDR con *tone-mapping*: colores correctos en cualquier pantalla y navegador.
 - Mantiene una **cola de trabajos persistente** (SQLite) con progreso en tiempo
@@ -52,6 +57,11 @@ Los documentos de diseño (funcional y técnico) están en [`docs/`](docs/).
   se mueve o la base de datos se pierde, los títulos publicados se reimportan.
 - Usa la **aceleración por hardware** disponible (NVENC, Quick Sync, AMF, VAAPI,
   VideoToolbox) y cae a CPU (libx264) si no hay ninguna.
+- Acepta del consumidor **nombres, idiomas y pista predeterminada** de cada
+  pista (por ejemplo, los de un catálogo) y reescribe en el acto los manifiestos
+  y `metadata.json`, sin tocar un solo segmento.
+- Puede correr **en segundo plano** (`--background`): sin ventana, con icono en
+  la bandeja, para un equipo que procesa desatendido.
 - **Registra todo lo que hace** (sección *Logs*, en tiempo real): cada acción,
   cada paso de cada job con su duración y, cuando algo falla, el error con su
   traza, el comando ejecutado y la salida de ffmpeg.
@@ -97,7 +107,8 @@ Localcloud (backend)                          LocalProcessor-Movies (app de escr
 
 1. **La API existe mientras la aplicación está abierta.** Vive dentro de la app
    de escritorio; al cerrar la ventana se detiene (en macOS sigue mientras la
-   app esté en el Dock). No hay servicio en segundo plano.
+   app esté en el Dock), salvo que corra **en segundo plano** (ver
+   [3.1](#31-en-segundo-plano)): así la usa un equipo que procesa desatendido.
 2. **Se integra desde el backend, no desde el navegador.** La API solo permite
    CORS al origen de su propia ventana: una página web de otro origen ve sus
    peticiones bloqueadas y su WebSocket cerrado con código `1008`. Los clientes
@@ -165,6 +176,32 @@ con libx264 automáticamente.
 
 ---
 
+### 3.1 En segundo plano
+
+Para un equipo que procesa sin nadie delante (un servidor en casa), la
+aplicación arranca sin ventana con `--background` (o la variable de entorno
+`LP_BACKGROUND=1`):
+
+- No abre ventana; la API y la cola funcionan igual. Un icono en la bandeja del
+  sistema abre la ventana (doble clic o *Abrir*) y cierra la aplicación
+  (*Salir*, que deja los jobs en curso reencolados como cualquier cierre).
+- Abrir la aplicación otra vez (menú Inicio, acceso directo) muestra la ventana
+  de la instancia que ya corre. Cerrar esa ventana no detiene nada.
+
+Para que arranque sola al iniciar sesión en Windows, un acceso directo en la
+carpeta de inicio (`Win + R` → `shell:startup`) con destino:
+
+```
+"%LOCALAPPDATA%\Programs\LocalProcessor-Movies\LocalProcessor-Movies.exe" --background
+```
+
+Tras un corte de luz vuelve cuando el usuario inicia sesión: en un equipo sin
+teclado conviene el inicio de sesión automático de Windows.
+
+No se llama `--headless` a propósito: Chromium, sobre el que corre Electron, usa
+ese nombre para su propio modo sin pantalla, en el que no se puede mostrar
+ninguna ventana.
+
 ## 4. Qué produce
 
 ### 4.1 La carpeta de un título
@@ -178,6 +215,7 @@ Cada título se publica en `<carpeta de salida>/<uuid>/`, donde `<uuid>` es el
 ├── manifest.mpd             manifiesto DASH (mismos segmentos)
 ├── metadata.json            descripción del título (ver 4.2)
 ├── video/
+│   ├── original/            el video del origen copiado tal cual, si aplica (ver 4.3)
 │   ├── 1080p/               init.mp4, seg_00001.m4s, seg_00002.m4s…, playlist.m3u8
 │   ├── 720p/
 │   └── 480p/
@@ -254,9 +292,9 @@ lo que necesita sin llamar a la API.
 | `segmentDurationSeconds` | Duración real de los segmentos: la configurada (6 s por defecto) ajustada a un número entero de fotogramas. |
 | `dynamicRange` | `source` es `sdr`, `pq` (HDR10) o `hlg`; `output` es siempre `sdr`. |
 | `source` | Ruta, tamaño y características del archivo original. La ruta es la del PC de LocalProcessor-Movies. |
-| `renditions[]` | Calidades publicadas. `bitrate` es el promedio medido en bps; `maxBitrate` el tope del codificador. `path` es la carpeta relativa. |
-| `audioTracks[]` | Idioma en BCP-47 (`es`, `en`, `es-419`; `und` si el origen no lo indica), nombre legible, códec de salida y canales. `sourceIndex`/`sourceCodec` identifican la pista en el original. |
-| `subtitleTracks[]` | Siempre `format: "vtt"`; `forced` marca los subtítulos forzados. |
+| `renditions[]` | Calidades publicadas. `bitrate` es el promedio medido en bps; `maxBitrate` el tope del codificador. `path` es la carpeta relativa. `copied: true` en la calidad `original`, el video del origen sin re-codificar. |
+| `audioTracks[]` | Idioma en BCP-47 (`es`, `en`, `es-419`; `und` si el origen no lo indica), nombre legible, códec de salida y canales. `sourceIndex`/`sourceCodec` identifican la pista en el original. `default` marca la pista que el reproductor elige sin preguntar; `original` guarda lo que decía el origen mientras un consumidor lo reemplaza (ver [5.12](#512-nombres-idiomas-y-pista-predeterminada)). |
+| `subtitleTracks[]` | Siempre `format: "vtt"`; `forced` marca los subtítulos forzados; `default` y `original` como en el audio (ningún subtítulo es predeterminado salvo que el origen o el consumidor lo pidan). |
 | `updatedAt` | Fecha ISO-8601 de la última publicación. |
 
 Las pistas de audio y subtítulos van también dentro de los manifiestos con sus
@@ -287,11 +325,39 @@ reproductor las ofrece solo.
 - Todas las calidades se codifican en una sola pasada de ffmpeg a partir de una
   única decodificación del original.
 
+**Copia del video** (`copyVideo`, activa por defecto)
+
+- Si el video del origen es **H.264 4:2:0 de 8 bits, SDR, y no supera
+  `copyVideoMaxKbps`** (12 000 por defecto), no se re-codifica: se publica tal
+  cual como calidad `original` (`video/original/`). Re-codificar un video que
+  cualquier navegador ya decodifica solo pierde calidad y agranda el archivo:
+  una película de 2 GB a 2 Mbps salía como escalera de 4 GB a 3 Mbps.
+- Al lado se codifica **solo la calidad activa más baja** (480p con la
+  configuración por defecto), para las conexiones lentas, y solo si baja de
+  verdad: con un tope por encima del 60 % de la tasa del origen, o un origen que
+  ya es de esa altura, va la copia sola. Esa calidad pone sus fotogramas clave
+  exactamente donde los tiene el original (`-force_key_frames source`), así las
+  dos cortan en los mismos puntos y el reproductor cambia entre ellas limpio.
+  Las calidades que se agreguen después al título también se alinean así.
+- HEVC, 10 bits, HDR (aunque sea H.264 de 8 bits: una captura HLG) o una tasa
+  por encima del tope pasan por la escalera normal.
+- Los segmentos de la copia cortan en los fotogramas clave del original, así que
+  pueden no medir exactamente la duración configurada. Un original con *open
+  GOP* puede dar un artefacto breve al saltar; si se nota, `copyVideo: false`.
+
 **HDR → SDR**
 
 - Detecta HDR por la función de transferencia del origen (`smpte2084` = HDR10/PQ,
-  `arib-std-b67` = HLG) y aplica *tone-mapping* (algoritmo Hable, con el pico
-  de brillo leído de los metadatos MaxCLL o de la pantalla de masterización).
+  `arib-std-b67` = HLG) y aplica *tone-mapping* con la curva **mobius**, con el
+  pico de brillo leído de los metadatos MaxCLL o de la pantalla de
+  masterización. Mobius es lineal hasta 30 nits y comprime suave desde ahí
+  (100 nits quedan en el 66 % del blanco SDR, 200 en el 82 %); Hable aplastaba
+  todo el rango medio (100 nits al 31 %) y la imagen salía oscura.
+- El *tone-mapping* se hace una sola vez, sobre el fotograma ya reducido a la
+  calidad más alta: trabaja en coma flotante por píxel y en 4K cuesta el doble
+  que en 1080p. Los metadatos estáticos HDR10 (pantalla de masterización,
+  MaxCLL) se borran después: si llegaran al encoder, el H.264 SDR declararía a
+  la vez BT.709 y una pantalla BT.2020 de 1000 nits (`mdcv`/`clli` en el init).
 - Dolby Vision con base HDR10 (perfiles 7 y 8) se trata igual. Dolby Vision
   perfil 5 (sin base HDR10) **se rechaza** al entregarlo (`400`), porque no se
   puede convertir con colores correctos.
@@ -300,11 +366,22 @@ reproductor las ofrece solo.
 
 **Audio**
 
-- AAC se copia tal cual. AC-3 y E-AC-3 se copian **y además** se genera una
-  versión AAC con los mismos canales, porque Chrome y Firefox no decodifican
-  Dolby. Cualquier otro códec (DTS, TrueHD, FLAC, Opus…) se convierte a AAC
-  conservando los canales (hasta 8) a 64 kbps por canal (128 kbps estéreo,
-  384 kbps 5.1).
+- AC-3 y E-AC-3 se copian **y además** se genera una versión AAC, porque
+  Chrome y Firefox no decodifican Dolby.
+- **AAC se copia solo si su `channelConfiguration` es estándar (1 a 7).** Un
+  AAC con otro layout (`5.1(side)`, `7.1(wide)`, `quad`) lleva
+  `channelConfiguration=0` y un PCE en el AudioSpecificConfig, y el demuxer MP4
+  de Chrome no lo parsea: la reproducción falla sin mensaje y la película queda
+  en negro. Se lee del *extradata* (el nombre del layout no alcanza: un PCE
+  escrito a mano para 5.1 se informa como `5.1`); sin *extradata* (AAC en ADTS,
+  dentro de un `.ts`) decide el nombre.
+- Todo lo demás (DTS, TrueHD, FLAC, Opus, AAC con PCE…) se convierte a AAC:
+  mono y estéreo conservan sus canales; de tres para arriba sale **5.1
+  estándar**, lo más que decodifica cualquier navegador (`-ac 3` daría 2.1 con
+  el diálogo en el LFE, y 4, 5 o 7 canales no tienen un layout que Chrome
+  acepte seguro). Tasas con margen: 128 kbps mono, 256 estéreo, 384 el 5.1.
+- Un AAC copiado desde un `.ts` pierde sus cabeceras ADTS (el muxer MP4 no las
+  admite); el audio es el mismo.
 - En HLS cada códec de audio forma su propio grupo (`audio-aac`, `audio-ac3`…)
   y cada calidad de video tiene una variante por grupo: cada reproductor elige
   el que sabe decodificar.
@@ -387,6 +464,7 @@ por coma en multipart):
 | `standards` | lista | `["hls", "dash"]` o un subconjunto. Por defecto, los de la configuración. |
 | `qualities` | lista | Etiquetas de la escalera (`"1080p"`, `"720p"`…). Deben existir en `config.rungs`; las mayores que el origen se omiten. |
 | `segmentDurationSeconds` | entero 1–60 | Duración de los segmentos. Por defecto, la de la configuración (6). |
+| `tracks` | objeto | Nombres, idiomas y pista predeterminada por `sourceIndex` (ver [5.12](#512-nombres-idiomas-y-pista-predeterminada)). En multipart, el mismo JSON en un campo de texto. |
 
 Respuesta `201 Created`. Guarda `title.id` (identifica el título y su carpeta)
 y `job.id` (para seguir el progreso):
@@ -644,6 +722,40 @@ function esperarJob(jobId) {
 }
 ```
 
+### 5.12 Nombres, idiomas y pista predeterminada
+
+Por defecto cada pista se llama como dice el origen: su título (`Español
+latino`, `Comentarios del director`) o, si no tiene, el nombre del idioma. La
+predeterminada es la que el origen marca, o la primera. Un consumidor con su
+propio catálogo puede imponer los suyos, por `sourceIndex` (el índice de la
+pista en el original, el mismo de `metadata.json`):
+
+```bash
+curl -X PUT http://127.0.0.1:4700/titles/<id>/tracks -H 'Content-Type: application/json' -d '{"audio": [{"sourceIndex": 1, "name": "Castellano"}, {"sourceIndex": 2, "language": "es-419", "name": "Latino", "default": true}], "subtitles": [{"sourceIndex": 3, "forced": true}]}'
+```
+
+- Reemplaza el conjunto entero: una pista que no aparece vuelve a lo del
+  origen, y `{}` las devuelve todas.
+- Los campos ausentes o `null` conservan lo del origen. `language` se normaliza
+  a BCP-47 (`spa` → `es`); `forced` existe solo para subtítulos; como mucho una
+  pista de audio y un subtítulo con `default: true`.
+- Una pista Dolby y su versión AAC comparten `sourceIndex` y toman los mismos
+  valores.
+- En un título publicado se aplica en el acto: se reescriben `master.m3u8`,
+  `manifest.mpd` y `metadata.json` (cada uno con *rename* atómico), sin tocar
+  un segmento. Responde `200 { title, applied: true, metadata }`.
+- Si el título todavía no se publicó, o tiene un job en curso, se guarda y lo
+  aplica el job al terminar (`applied: false`). Pertenecen al título: un
+  reprocesado completo los vuelve a aplicar.
+- También se pueden mandar al crearlo: `POST /titles` con `tracks` (en
+  multipart, un campo de texto con el mismo JSON).
+- `400` con `problems[]` si una pista no existe en el título o algo no es
+  válido.
+
+En los manifiestos, `NAME` no se repite dentro de un grupo de HLS (un segundo
+«Español» pasa a «Español 2»), hay exactamente un `DEFAULT=YES` por grupo de
+audio y, en DASH, la predeterminada lleva `Role main`.
+
 ---
 
 ## 6. Referencia de la API
@@ -670,12 +782,13 @@ function esperarJob(jobId) {
 
 | Método | Ruta | Cuerpo | Respuesta |
 |---|---|---|---|
-| `POST` | `/titles` | JSON `{ sourcePath, name?, standards?, qualities?, segmentDurationSeconds? }` o multipart con `file` y los mismos campos | `201 { title, job }` |
+| `POST` | `/titles` | JSON `{ sourcePath, name?, standards?, qualities?, segmentDurationSeconds?, tracks? }` o multipart con `file` y los mismos campos | `201 { title, job }` |
 | `GET` | `/titles` | — | `200 Title[]` |
 | `GET` | `/titles/:id` | — | `200 Title` con `renditions[]`, `audio_tracks[]`, `subtitle_tracks[]`, `jobs[]` |
 | `GET` | `/titles/:id/files` | — | `200 { root, exists, totalBytes, fileCount, entries[] }` |
 | `POST` | `/titles/:id/reprocess` | `{ tipo: "agregar_calidad", qualities }`, `{ tipo: "agregar_pista", audio?, subtitles?, files? }` o `{ tipo: "reprocesar_completo", standards?, qualities?, segmentDurationSeconds? }` | `202 { title, job }` |
 | `PUT` | `/titles/:id/source` | `{ sourcePath }` | `200 Title` |
+| `PUT` | `/titles/:id/tracks` | `{ audio?, subtitles? }` (ver [5.12](#512-nombres-idiomas-y-pista-predeterminada)) | `200 { title, applied, metadata }` |
 | `DELETE` | `/titles/:id` | — | `204` |
 | `POST` | `/titles/import` | — | `200 { imported[], relinked[], skipped[] }` |
 | `GET` | `/jobs` | `?status=queued,running` (por defecto, los activos) o `?status=all` | `200 Job[]` |
@@ -700,6 +813,7 @@ function esperarJob(jobId) {
 | `name` | texto | Nombre del título. |
 | `source_path` | texto o `null` | Ruta del original en el PC de LocalProcessor-Movies; `null` en títulos importados sin origen. |
 | `source_managed` | booleano | `true` si el original se subió por multipart (LocalProcessor-Movies lo borra con el título). |
+| `track_overrides` | objeto o `null` | Nombres, idiomas y pista predeterminada impuestos por el consumidor (`{ audio?, subtitles? }`). |
 | `source_hash` | texto o `null` | Huella del original, para detectar cambios entre reprocesados. |
 | `source_width`, `source_height`, `source_fps`, `source_video_bitrate`, `source_video_codec` | — | Características del original. |
 | `source_hdr` | `null`, `"pq"` o `"hlg"` | Rango dinámico del original (la salida es siempre SDR). |
@@ -755,6 +869,8 @@ subconjunto de campos y responde `400` con `problems[]` si algo no es válido.
 | `qualities` | `["2160p", "1080p", "720p", "480p"]` | Etiquetas activas; cada una debe existir en `rungs`. |
 | `rungs` | ver [4.3](#43-reglas-de-conversión) | `{ "<etiqueta>": { width, height, maxBitrateKbps } }`; dimensiones pares ≥ 16. |
 | `segmentDurationSeconds` | `6` | Entero entre 1 y 60. |
+| `copyVideo` | `true` | Copiar el video del origen cuando ya es compatible (ver [4.3](#43-reglas-de-conversión)). |
+| `copyVideoMaxKbps` | `12000` | Tasa máxima del video del origen para copiarlo. Entero positivo. |
 | `encoder` | `"auto"` | `"auto"` (mejor codificador por hardware disponible) o `"software"` (siempre libx264). |
 | `maxConcurrentJobs` | `"auto"` | `"auto"` o entero 1–16. |
 | `apiAccess` | `"local"` | `"local"` o `"lan"`. |
@@ -767,6 +883,7 @@ Los cambios se aplican a los jobs que se encolen a partir de ese momento.
 | Variable | Efecto |
 |---|---|
 | `LP_API_PORT` | Puerto de la API (por defecto `4700`). |
+| `LP_BACKGROUND` | `1` arranca en segundo plano, igual que `--background` (ver [3.1](#31-en-segundo-plano)). |
 | `LP_DATA_DIR` | Carpeta de la base de datos (por defecto, la carpeta de datos del usuario). |
 | `LP_FFMPEG`, `LP_FFPROBE`, `LP_PACKAGER` | Rutas a binarios propios en lugar de los incluidos. |
 

@@ -8,7 +8,8 @@ import { createTestServer } from './helpers'
 let app: FastifyInstance
 
 beforeEach(async () => {
-  app = (await createTestServer()).app
+  // The helper turns copying off for the ladder tests; here the defaults must stay the defaults
+  app = (await createTestServer({ copyVideo: true })).app
 })
 
 afterEach(() => app.close())

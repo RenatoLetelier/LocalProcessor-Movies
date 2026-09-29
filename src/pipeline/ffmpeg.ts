@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { SOFTWARE_ENCODER, encoderFilterSuffix, encoderGlobalArgs, encoderInputArgs, videoCodecArgs, type EncoderKind } from './encoders'
+import { SOFTWARE_ENCODER, encoderFilterSuffix, encoderGlobalArgs, encoderInputArgs, videoCodecArgs } from './encoders'
 import { run } from './exec'
 import { encodedAudioFile, encodedSubtitleFile, encodedVideoFile } from './layout'
 import type {
@@ -25,7 +25,8 @@ export interface EncodeOutputs {
 
 // One ffmpeg invocation decodes the source once and writes every rendition and
 // audio track as separate MP4 intermediates for the packager. External track
-// files are extra inputs of the same run.
+// files are extra inputs of the same run. A copied rendition comes straight from the
+// demuxer, by absolute index so cover art (attached_pic) never gets picked.
 export function buildFfmpegArgs(
   source: SourceInfo,
   plan: EncodePlan,
@@ -40,25 +41,30 @@ export function buildFfmpegArgs(
   inputs.paths.forEach((path, i) => args.push(...(i === 0 ? encoderInputArgs(opts.kind) : []), '-i', path))
   const outputs: EncodeOutputs = { video: [], audio: [] }
 
-  // HDR is mapped to SDR once, on the decoded frames, before they fan out to the renditions
-  const toneMap = source.video.hdr ? `${hdrToSdrFilter(source.video.hdr)},` : ''
   const videoInput = `0:${source.video.index}`
-  const labels = plan.renditions.map((r) => `[v_${r.label}]`)
-  if (plan.renditions.length > 1) {
-    const chain = plan.renditions.map((r) => `[s_${r.label}]${scaleFilter(r, opts.kind)}[v_${r.label}]`)
+  const encoded = plan.renditions.filter((r) => !r.copy)
+  const suffix = encoderFilterSuffix(opts.kind)
+  // HDR is mapped to SDR once, before the frames fan out to the renditions, and on
+  // frames already reduced to the largest one: the float math per pixel costs twice
+  // as much at 4K as at 1080p.
+  const top = encoded.reduce<RenditionPlan | undefined>((a, b) => (a && a.width * a.height >= b.width * b.height ? a : b), undefined)
+  const toneMap = source.video.hdr && top ? `${scaleTo(top)},${hdrToSdrFilter(source.video.hdr)}` : ''
+  if (encoded.length > 1) {
+    const chain = encoded.map((r) => `[s_${r.label}]${scaleTo(r)}${suffix}[v_${r.label}]`)
     args.push(
       '-filter_complex',
-      `[${videoInput}]${toneMap}split=${plan.renditions.length}${labels.map((l) => l.replace('v_', 's_')).join('')};${chain.join(';')}`
+      `[${videoInput}]${toneMap ? `${toneMap},` : ''}split=${encoded.length}${encoded.map((r) => `[s_${r.label}]`).join('')};${chain.join(';')}`
     )
   }
 
-  plan.renditions.forEach((rendition, i) => {
+  for (const rendition of plan.renditions) {
     const file = join(encDir, encodedVideoFile(rendition.label))
-    if (plan.renditions.length > 1) args.push('-map', labels[i]!)
-    else args.push('-map', videoInput, '-vf', `${toneMap}${scaleFilter(rendition, opts.kind)}`)
-    args.push(...videoCodecArgs(opts.kind, rendition, plan, opts), '-an', '-sn', '-dn', '-map_metadata', '-1', '-f', 'mp4', file)
+    if (rendition.copy) args.push('-map', videoInput, '-c:v', 'copy')
+    else if (encoded.length > 1) args.push('-map', `[v_${rendition.label}]`, ...videoCodecArgs(opts.kind, rendition, plan, opts))
+    else args.push('-map', videoInput, '-vf', `${toneMap || scaleTo(rendition)}${suffix}`, ...videoCodecArgs(opts.kind, rendition, plan, opts))
+    args.push('-an', '-sn', '-dn', '-map_metadata', '-1', '-f', 'mp4', file)
     outputs.video.push({ label: rendition.label, file })
-  })
+  }
 
   for (const audio of plan.audio) {
     const file = join(encDir, encodedAudioFile(audio))
@@ -88,31 +94,43 @@ class InputList {
 }
 
 // setsar=1 turns anamorphic sources into square pixels at the display size
-function scaleFilter(rendition: RenditionPlan, kind: EncoderKind): string {
-  return `scale=${rendition.width}:${rendition.height}:flags=bicubic,setsar=1${encoderFilterSuffix(kind)}`
+function scaleTo(rendition: RenditionPlan): string {
+  return `scale=${rendition.width}:${rendition.height}:flags=bicubic,setsar=1`
 }
 
-// Linearise the HDR signal (100 nits = 1.0), move to BT.709 primaries, compress
-// the highlights above the SDR range with the Hable filmic curve and re-encode
-// as BT.709 8-bit video. The signal peak comes from the source metadata, in
-// units of the 100-nit reference white the linear stage established. zscale
-// tags the frames BT.709, which the encoders write into the stream, so players
-// and the packager (VIDEO-RANGE=SDR) see plain SDR; the -color_* output options
-// are deliberately not used because ffmpeg 8 turns them into a conversion request.
+// Linearise the HDR signal (100 nits = 1.0) and move to BT.709 primaries in the same
+// zscale (split in two, with the input declared, zscale aborts), compress the
+// highlights above the SDR range and re-encode as BT.709 8-bit video. The signal peak
+// comes from the source metadata, in units of the 100-nit reference white the linear
+// stage established.
+//
+// mobius is linear up to 30 nits and compresses gently from there (100 nits land at
+// 66 % of SDR white, 200 at 82 %), leaving the top of the range for the highlights;
+// hable flattens the whole midrange (100 nits at 31 %) and the picture comes out dark.
+//
+// zscale tags the frames BT.709, which the encoders write into the stream, so players
+// and the packager (VIDEO-RANGE=SDR) see plain SDR; the -color_* output options are
+// deliberately not used because ffmpeg 8 turns them into a conversion request. The
+// HDR10 static metadata travels as frame side data all the way to the encoder and
+// the muxer: without deleting it, the SDR H.264 declares BT.709 and at the same time
+// a 1000-nit BT.2020 mastering display (mdcv/clli in the init segment, SEI in the stream).
 export function hdrToSdrFilter(hdr: SourceHdr): string {
   const peak = (hdr.peakNits / 100).toFixed(2)
   return [
-    `zscale=tin=${hdr.colorTransfer}:pin=${hdr.colorPrimaries}:min=${hdr.colorSpace}:t=linear:npl=100`,
+    `zscale=tin=${hdr.colorTransfer}:pin=${hdr.colorPrimaries}:min=${hdr.colorSpace}:t=linear:npl=100:p=bt709`,
     'format=gbrpf32le',
-    'zscale=p=bt709',
-    `tonemap=tonemap=hable:desat=0:peak=${peak}`,
+    `tonemap=tonemap=mobius:desat=0:peak=${peak}`,
     'zscale=t=bt709:m=bt709:r=tv',
-    'format=yuv420p'
+    'format=yuv420p',
+    'sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA',
+    'sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL'
   ].join(',')
 }
 
 function audioCodecArgs(audio: AudioPlan): string[] {
-  if (audio.action === 'copy') return ['-c:a', 'copy']
+  // An AAC out of a .ts carries ADTS headers the MP4 muxer rejects; the filter strips
+  // them and lets everything else through untouched
+  if (audio.action === 'copy') return ['-c:a', 'copy', ...(audio.outputCodec === 'aac' ? ['-bsf:a', 'aac_adtstoasc'] : [])]
   return ['-c:a', audio.outputCodec, '-b:a', `${audio.bitrateKbps}k`, '-ac', String(audio.channels)]
 }
 

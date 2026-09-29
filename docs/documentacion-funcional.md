@@ -34,7 +34,7 @@ No es un reproductor ni una plataforma de streaming en sí mismo — es el motor
 ### 3.4 Motor de transcodificación
 - Analiza el archivo de origen antes de procesar (resolución, bitrate, pistas de audio y subtítulos disponibles).
 - Genera únicamente las calidades configuradas que sean **iguales o menores** a la calidad de origen (nunca upscaling).
-- Preserva la calidad de video y audio del original — no degrada más de lo necesario para hacer el contenido compatible con streaming.
+- Preserva la calidad de video y audio del original — no degrada más de lo necesario para hacer el contenido compatible con streaming. Un video que los navegadores ya reproducen (H.264 de 8 bits, SDR, con una tasa razonable) se publica sin re-codificar, con una sola calidad baja al lado para conexiones lentas.
 - Preserva todas las pistas de audio y de subtítulos del archivo original.
 - Los orígenes HDR (HDR10/PQ o HLG, habituales en 4K) se convierten a SDR mediante *tone-mapping*, de modo que el resultado se ve con colores correctos en cualquier reproductor, tenga o no soporte HDR. Las fuentes Dolby Vision con base HDR10 (perfiles 7 y 8) se tratan igual; las de perfil 5, sin base HDR10, se rechazan al encolar porque no se pueden convertir con colores correctos. Conservar el HDR en una escalera HEVC adicional queda como extensión futura.
 - Si un códec de audio no es compatible con streaming (ej. DTS), se transcodifica a AAC o EAC3 en vez de descartarlo.
