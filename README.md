@@ -270,7 +270,8 @@ lo que necesita sin llamar a la API.
 
 Las pistas de audio y subtítulos van también dentro de los manifiestos con sus
 atributos HLS/DASH (idioma, nombre, `FORCED`, grupos por códec), de modo que un
-reproductor las ofrece solo.
+reproductor las ofrece solo. Una pista que el origen deja sin idioma se empaqueta
+sin él, porque Shaka Packager rechaza `und`, y el manifiesto la declara `und`.
 
 ### 4.3 Reglas de conversión
 
@@ -400,7 +401,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.2.1", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.3.1", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,

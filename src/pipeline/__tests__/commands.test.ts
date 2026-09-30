@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildFfmpegArgs, buildSubtitleArgs, hdrToSdrFilter, parseProgressLine } from '../ffmpeg'
-import { buildPackagerArgs } from '../packager'
+import { buildPackagerArgs, packagerLanguage } from '../packager'
 import { languageDisplayName, toBcp47 } from '../lang'
 import type { EncodePlan, SourceInfo } from '../types'
 
@@ -282,6 +282,20 @@ describe('buildPackagerArgs', () => {
     expect(buildPackagerArgs({ ...plan, subtitles: [] }, ['hls'])).not.toContain('--default_text_language')
   })
 
+  it('packages untagged tracks without a language, which Shaka rejects as "und"', () => {
+    const untagged: EncodePlan = {
+      ...plan,
+      audio: [{ ...plan.audio[0]!, language: 'und', name: 'Desconocido', isDefault: true }],
+      subtitles: [{ ...plan.subtitles[0]!, language: 'und', name: 'Desconocido', isDefault: true }]
+    }
+    const untaggedArgs = buildPackagerArgs(untagged, ['hls'])
+    expect(untaggedArgs[1]).toContain('hls_name=Desconocido,dash_label=Desconocido')
+    expect(untaggedArgs[1]).not.toContain('language=')
+    expect(untaggedArgs[2]).not.toContain('language=')
+    expect(untaggedArgs).not.toContain('--default_language')
+    expect(window(untaggedArgs, '--default_text_language')).toEqual(['zxx'])
+  })
+
   it('passes the exact segment length, default language and only the requested manifests', () => {
     expect(window(args, '--segment_duration')).toEqual(['6.006000'])
     expect(window(args, '--default_language')).toEqual(['en'])
@@ -300,6 +314,12 @@ describe('language tags', () => {
       'es', 'en', 'fr', 'fr', 'de', 'ja', 'und', 'xyz', 'pt-br', 'und'
     ])
     expect(toBcp47(null)).toBe('und')
+  })
+
+  it('hands Shaka only tags it can map, never "und"', () => {
+    expect(['es', 'pt-br', 'fil', 'und', 'español', ''].map(packagerLanguage)).toEqual([
+      'es', 'pt-br', 'fil', undefined, undefined, undefined
+    ])
   })
 
   it('names languages in their own language', () => {

@@ -18,12 +18,28 @@ import {
   renditionDir,
   subtitleDir
 } from './layout'
+import { UNDETERMINED } from './lang'
 import type { Binaries, EncodePlan } from './types'
 
 // Folder names inside the job work dir; Shaka runs with the work dir as cwd so
 // no absolute path (which may contain "," or "=") ends up in a stream descriptor.
 export const ENC_DIR = 'enc'
 export const PKG_DIR = 'pkg'
+
+const LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]{1,8})*$/
+
+// Shaka stops the whole run on a language it cannot map to ISO 639-2, "und" included
+// ("Unknown/invalid language specified: und"). An untagged track, or one whose tag is not
+// a language code, is packaged without one: labelMaster and labelMpd still write the
+// language from metadata.json into both manifests.
+export function packagerLanguage(language: string): string | undefined {
+  return language !== UNDETERMINED && LANGUAGE_TAG.test(language) ? language : undefined
+}
+
+const languageField = (language: string): Record<string, string> => {
+  const tag = packagerLanguage(language)
+  return tag ? { language: tag } : {}
+}
 
 export interface PackagerOptions {
   // Incremental runs add streams to a published title whose defaults are already set
@@ -58,7 +74,7 @@ export function buildPackagerArgs(plan: EncodePlan, standards: Standard[], optio
         hls_group_id: audioGroupId(audio),
         hls_name: audio.name,
         dash_label: audio.name,
-        language: audio.language
+        ...languageField(audio.language)
       })
     )
   }
@@ -76,7 +92,7 @@ export function buildPackagerArgs(plan: EncodePlan, standards: Standard[], optio
         hls_group_id: SUBTITLE_GROUP_ID,
         hls_name: subtitle.name,
         dash_label: subtitle.name,
-        language: subtitle.language,
+        ...languageField(subtitle.language),
         ...(subtitle.forced ? { forced_subtitle: '1' } : {})
       })
     )
@@ -86,11 +102,14 @@ export function buildPackagerArgs(plan: EncodePlan, standards: Standard[], optio
   if (options.markDefaults !== false) {
     // Marks DEFAULT=YES (HLS) / Role main (DASH) on the first track of this language
     const defaultAudio = plan.audio.find((a) => a.isDefault) ?? plan.audio[0]
-    if (defaultAudio) args.push('--default_language', defaultAudio.language)
+    const defaultAudioLanguage = defaultAudio && packagerLanguage(defaultAudio.language)
+    if (defaultAudioLanguage) args.push('--default_language', defaultAudioLanguage)
     // Subtitles stay off unless the source flags one as default: --default_language
     // would otherwise also mark the same-language subtitle DEFAULT=YES ("zxx" = no language)
     const defaultSubtitle = plan.subtitles.find((s) => s.isDefault && !s.forced)
-    if (plan.subtitles.length > 0) args.push('--default_text_language', defaultSubtitle?.language ?? 'zxx')
+    if (plan.subtitles.length > 0) {
+      args.push('--default_text_language', (defaultSubtitle && packagerLanguage(defaultSubtitle.language)) ?? 'zxx')
+    }
   }
   if (standards.includes('hls')) {
     args.push('--hls_master_playlist_output', `${PKG_DIR}/${MASTER_PLAYLIST}`, '--hls_playlist_type', 'VOD')

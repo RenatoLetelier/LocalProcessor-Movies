@@ -226,6 +226,35 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
     expect(existsSync(join(result.outputFolder, 'video/180p/playlist.m3u8'))).toBe(true)
   }, 60_000)
 
+  it('packages tracks the source left without a language tag', async () => {
+    // As a real upload did: Shaka used to reject the whole run with
+    // "Unknown/invalid language specified: und"
+    const untagged = join(root, 'untagged.mkv')
+    await run(binaries!.ffmpeg, [
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', join(root, 'sample.mkv'), '-t', '3',
+      '-map', '0:v', '-map', '0:a:0', '-map', '0:s:0', '-c', 'copy',
+      '-metadata:s:a:0', 'language=', '-metadata:s:s:0', 'language=', untagged
+    ])
+    const result = await processTitle(binaries!, {
+      titleId: '00000000-0000-4000-8000-000000000004',
+      name: 'Untagged',
+      sourcePath: untagged,
+      outputRoot: join(root, 'out'),
+      standards: ['hls', 'dash'],
+      plan: { rungs: DEFAULT_CONFIG.rungs, qualities: DEFAULT_CONFIG.qualities, segmentDurationSeconds: 2 },
+      videoEncoder: { preset: 'veryfast' }
+    })
+    const media = readFileSync(join(result.outputFolder, 'master.m3u8'), 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('#EXT-X-MEDIA:'))
+    const audio = media.find((line) => line.includes('TYPE=AUDIO'))
+    const subtitle = media.find((line) => line.includes('TYPE=SUBTITLES'))
+    expect(audio).toContain('LANGUAGE="und"')
+    expect(audio).toContain('DEFAULT=YES')
+    expect(subtitle).toContain('LANGUAGE="und"')
+    expect(existsSync(join(result.outputFolder, 'audio/1_und_aac/playlist.m3u8'))).toBe(true)
+  }, 60_000)
+
   it('skips a subtitle ffmpeg cannot convert, or one without cues, instead of failing the whole job', async () => {
     const source = await probeSource(binaries!, join(root, 'sample.mkv'))
     const empty = join(root, 'empty.vtt')
