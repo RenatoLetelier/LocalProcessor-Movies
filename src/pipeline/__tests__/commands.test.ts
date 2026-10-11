@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFfmpegArgs, buildSubtitleArgs, hdrToSdrFilter, parseProgressLine, repairWebVtt } from '../ffmpeg'
+import { buildFfmpegArgs, buildSubtitleArgs, buildSubtitleBatchArgs, hdrToSdrFilter, parseProgressLine, repairWebVtt } from '../ffmpeg'
 import { buildPackagerArgs, packagerLanguage } from '../packager'
 import { languageDisplayName, toBcp47 } from '../lang'
 import type { EncodePlan, SourceInfo } from '../types'
@@ -223,6 +223,18 @@ describe('buildSubtitleArgs', () => {
     const { args, file } = buildSubtitleArgs(source, plan.subtitles[0]!, 'C:/work/enc')
     expect(file).toMatch(/sub_3\.vtt$/)
     expect(args.join(' ')).toContain('-i C:/in/movie.mkv -map 0:3 -c:s webvtt -f webvtt')
+  })
+})
+
+describe('buildSubtitleBatchArgs', () => {
+  it('reads the file once and writes one WebVTT per track, reporting progress', () => {
+    const second = { ...plan.subtitles[0]!, sourceIndex: 7, input: { streamIndex: 7 } }
+    const { args, files } = buildSubtitleBatchArgs('C:/in/movie.mkv', [plan.subtitles[0]!, second], 'C:/work/enc')
+    expect(args.filter((a) => a === '-i')).toHaveLength(1)
+    expect(args.join(' ')).toContain('-progress pipe:1 -i C:/in/movie.mkv -map 0:3 -c:s webvtt -f webvtt')
+    expect(args.join(' ')).toContain('-map 0:7 -c:s webvtt -f webvtt')
+    expect(files).toEqual([expect.stringMatching(/sub_3\.vtt$/), expect.stringMatching(/sub_7\.vtt$/)])
+    expect(args.slice(-1)[0]).toBe(files[1])
   })
 })
 

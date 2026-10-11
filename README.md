@@ -364,6 +364,12 @@ sin él, porque Shaka Packager rechaza `und`, y el manifiesto la declara `und`.
   subtítulo con una línea en blanco dentro (el `\N\N` de ASS, típico de los
   carteles en anime) queda en un solo bloque: WebVTT lo cortaría en dos, y Shaka
   Packager rechaza el pedazo sin tiempos.
+- Todas las pistas de un mismo archivo salen en **una sola lectura**, antes de
+  codificar el video. Los subtítulos van repartidos por todo el archivo, así que
+  una lectura por pista recorría la película entera tantas veces como pistas
+  tuviera. Si esa pasada falla, las pistas se convierten una por una y solo se
+  omite la que no se puede convertir; queda un aviso en el registro. La lectura
+  ocupa el primer 5 % del paso `encode`, así que la barra avanza mientras dura.
 - Los subtítulos forzados se marcan como tales en HLS y DASH. Ningún subtítulo
   se activa por defecto salvo que el MKV de origen marque uno como *default*
   (en MP4 ese indicador se ignora porque casi siempre lo lleva la primera pista).
@@ -404,7 +410,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.4.0", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.4.1", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,

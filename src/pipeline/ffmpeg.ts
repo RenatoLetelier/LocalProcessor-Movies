@@ -172,44 +172,119 @@ export function buildSubtitleArgs(source: SourceInfo, subtitle: SubtitlePlan, en
   }
 }
 
+// Every text track of one file in a single ffmpeg run. The subtitles are interleaved with
+// the video along the whole file, so each run reads all of it: one run per track read a
+// 19 GB movie with 35 tracks 35 times, 670 GB, before the encode even started.
+export function buildSubtitleBatchArgs(input: string, subtitles: SubtitlePlan[], encDir: string): { args: string[]; files: string[] } {
+  const args = ['-hide_banner', '-nostdin', '-y', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-i', input]
+  const files = subtitles.map((subtitle) => {
+    const file = join(encDir, encodedSubtitleFile(subtitle.sourceIndex))
+    args.push('-map', `0:${subtitle.input.streamIndex}`, '-c:s', 'webvtt', '-f', 'webvtt', file)
+    return file
+  })
+  return { args, files }
+}
+
 export interface SubtitleExtraction {
   extracted: SubtitlePlan[]
   files: { sourceIndex: number; file: string }[]
   failed: SkippedItem[]
+  // Why the single run over a file failed and its tracks were converted one by one
+  fallbacks: { input: string; reason: string }[]
 }
 
-// Text subtitles are cheap: converted one by one before the video encode, and a
-// track ffmpeg cannot convert is reported as skipped instead of failing the job.
+type SubtitleOutcome = { file: string } | SkippedItem
+
+const firstLine = (error: unknown): string => (error instanceof Error ? error.message.split('\n')[0]! : String(error))
+
+function unconverted(subtitle: SubtitlePlan, error: unknown): SkippedItem {
+  return { kind: 'subtitle', id: String(subtitle.sourceIndex), reason: `no se pudo convertir a WebVTT: ${firstLine(error)}` }
+}
+
+async function checkConverted(subtitle: SubtitlePlan, file: string, onLog?: (line: string) => void): Promise<SubtitleOutcome> {
+  const text = await readFile(file, 'utf8')
+  const repaired = repairWebVtt(text)
+  if (repaired !== text) {
+    await writeFile(file, repaired, 'utf8')
+    onLog?.(`subtítulo ${subtitle.sourceIndex}: texto con líneas en blanco reunido con su subtítulo`)
+  }
+  // The packager aborts the whole run on a WebVTT without cues (END_OF_STREAM)
+  if (!/-->/.test(repaired)) return { kind: 'subtitle', id: String(subtitle.sourceIndex), reason: 'la pista no contiene ningún subtítulo' }
+  return { file }
+}
+
+async function extractOne(
+  binaries: Binaries,
+  source: SourceInfo,
+  subtitle: SubtitlePlan,
+  encDir: string,
+  hooks: { onLog?: (line: string) => void; signal?: AbortSignal }
+): Promise<SubtitleOutcome> {
+  const { args, file } = buildSubtitleArgs(source, subtitle, encDir)
+  hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
+  try {
+    await run(binaries.ffmpeg, args, { signal: hooks.signal, onStderrLine: hooks.onLog })
+    return await checkConverted(subtitle, file, hooks.onLog)
+  } catch (error) {
+    if (hooks.signal?.aborted) throw error
+    return unconverted(subtitle, error)
+  }
+}
+
+// Text subtitles go before the video encode, all the tracks of a file in one read. A track
+// ffmpeg cannot convert is reported as skipped instead of failing the job: when the single
+// run fails, its tracks are converted one by one so only the broken one is left out.
+// onProgress is 0..100 of the read through the source, the only long one.
 export async function extractSubtitles(
   binaries: Binaries,
   source: SourceInfo,
   subtitles: SubtitlePlan[],
   encDir: string,
-  hooks: { onLog?: (line: string) => void; signal?: AbortSignal }
+  hooks: { onLog?: (line: string) => void; onProgress?: (percent: number) => void; signal?: AbortSignal }
 ): Promise<SubtitleExtraction> {
-  const result: SubtitleExtraction = { extracted: [], files: [], failed: [] }
+  const result: SubtitleExtraction = { extracted: [], files: [], failed: [], fallbacks: [] }
+  const groups = new Map<string, SubtitlePlan[]>()
   for (const subtitle of subtitles) {
-    const { args, file } = buildSubtitleArgs(source, subtitle, encDir)
-    hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
-    try {
-      await run(binaries.ffmpeg, args, { signal: hooks.signal, onStderrLine: hooks.onLog })
-      const text = await readFile(file, 'utf8')
-      const repaired = repairWebVtt(text)
-      if (repaired !== text) {
-        await writeFile(file, repaired, 'utf8')
-        hooks.onLog?.(`subtítulo ${subtitle.sourceIndex}: texto con líneas en blanco reunido con su subtítulo`)
-      }
-      // The packager aborts the whole run on a WebVTT without cues (END_OF_STREAM)
-      if (!/-->/.test(repaired)) {
-        result.failed.push({ kind: 'subtitle', id: String(subtitle.sourceIndex), reason: 'la pista no contiene ningún subtítulo' })
+    const input = subtitle.input.path ?? source.path
+    groups.set(input, [...(groups.get(input) ?? []), subtitle])
+  }
+
+  const outcomes = new Map<SubtitlePlan, SubtitleOutcome>()
+  for (const [input, group] of groups) {
+    if (group.length > 1) {
+      const { args, files } = buildSubtitleBatchArgs(input, group, encDir)
+      hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
+      try {
+        await runFfmpeg(binaries, args, source.durationSeconds, {
+          onProgress: input === source.path ? (p) => hooks.onProgress?.(p.percent) : undefined,
+          onLog: hooks.onLog,
+          signal: hooks.signal
+        })
+        for (const [i, subtitle] of group.entries()) {
+          outcomes.set(subtitle, await checkConverted(subtitle, files[i]!, hooks.onLog).catch((error) => unconverted(subtitle, error)))
+        }
         continue
+      } catch (error) {
+        if (hooks.signal?.aborted) throw error
+        const reason = firstLine(error)
+        result.fallbacks.push({ input, reason })
+        hooks.onLog?.(`la pasada única de ${group.length} subtítulos falló (${reason}): se convierten uno por uno`)
       }
+    }
+    for (const [i, subtitle] of group.entries()) {
+      outcomes.set(subtitle, await extractOne(binaries, source, subtitle, encDir, hooks))
+      if (input === source.path) hooks.onProgress?.(((i + 1) / group.length) * 100)
+    }
+  }
+
+  // In plan order: it is the order of the tracks in the manifests
+  for (const subtitle of subtitles) {
+    const outcome = outcomes.get(subtitle)!
+    if ('file' in outcome) {
       result.extracted.push(subtitle)
-      result.files.push({ sourceIndex: subtitle.sourceIndex, file })
-    } catch (error) {
-      if (hooks.signal?.aborted) throw error
-      const message = error instanceof Error ? error.message.split('\n')[0] : String(error)
-      result.failed.push({ kind: 'subtitle', id: String(subtitle.sourceIndex), reason: `no se pudo convertir a WebVTT: ${message}` })
+      result.files.push({ sourceIndex: subtitle.sourceIndex, file: outcome.file })
+    } else {
+      result.failed.push(outcome)
     }
   }
   return result

@@ -1,6 +1,6 @@
 // End-to-end run with the real ffmpeg/ffprobe/packager binaries on a 6-second
 // synthetic clip. Skipped when the binaries are not available.
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -301,6 +301,7 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
     const source = await probeSource(binaries!, join(root, 'sample.mkv'))
     const empty = join(root, 'empty.vtt')
     writeFileSync(empty, 'WEBVTT\n\n')
+    const lines: string[] = []
     const result = await extractSubtitles(
       binaries!,
       source,
@@ -310,7 +311,7 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
         { sourceIndex: -7, input: { path: empty, streamIndex: 0 }, sourceCodec: 'webvtt', language: 'xx', name: 'Vacío', title: null, forced: false, isDefault: false }
       ],
       root,
-      {}
+      { onLog: (line) => lines.push(line) }
     )
     expect(result.extracted.map((s) => s.sourceIndex)).toEqual([4])
     expect(result.failed).toEqual([
@@ -318,6 +319,34 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
       { kind: 'subtitle', id: '-7', reason: 'la pista no contiene ningún subtítulo' }
     ])
     expect(existsSync(join(root, 'sub_4.vtt'))).toBe(true)
+    // The broken track sank the single run over the source: its two tracks went one by one
+    expect(result.fallbacks).toEqual([{ input: join(root, 'sample.mkv'), reason: expect.any(String) }])
+    expect(lines.filter((line) => line.startsWith('ffmpeg '))).toHaveLength(4)
+  })
+
+  it('reads every subtitle of the source in one ffmpeg run, in plan order, reporting progress', async () => {
+    const source = await probeSource(binaries!, join(root, 'sample.mkv'))
+    mkdirSync(join(root, 'batch'))
+    const lines: string[] = []
+    const progress: number[] = []
+    const result = await extractSubtitles(
+      binaries!,
+      source,
+      [
+        { sourceIndex: 5, input: { streamIndex: 5 }, sourceCodec: 'subrip', language: 'en', name: 'Forced', title: null, forced: true, isDefault: false },
+        { sourceIndex: 4, input: { streamIndex: 4 }, sourceCodec: 'subrip', language: 'es', name: 'Español', title: null, forced: false, isDefault: false }
+      ],
+      join(root, 'batch'),
+      { onLog: (line) => lines.push(line), onProgress: (p) => progress.push(p) }
+    )
+    expect(result.extracted.map((s) => s.sourceIndex)).toEqual([5, 4])
+    expect(result.failed).toEqual([])
+    expect(result.fallbacks).toEqual([])
+    expect(lines.filter((line) => line.startsWith('ffmpeg '))).toHaveLength(1)
+    expect(readFileSync(join(root, 'batch', 'sub_4.vtt'), 'utf8')).toContain('-->')
+    expect(readFileSync(join(root, 'batch', 'sub_5.vtt'), 'utf8')).toContain('-->')
+    expect(progress.length).toBeGreaterThan(0)
+    expect(Math.max(...progress)).toBeLessThanOrEqual(100)
   })
 
   it('adds a quality and external tracks to a published title, merging both manifests', async () => {

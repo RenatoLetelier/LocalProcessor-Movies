@@ -50,6 +50,10 @@ const STEP_RANGES: Record<PipelineStep, [number, number]> = {
   publish: [99, 100]
 }
 
+// Part of the encode step for reading the subtitles out when there is also video or audio
+// to encode: one pass through the file against the encode's
+const SUBTITLE_SHARE = 5
+
 type Reporter = (step: PipelineStep, stepPercent?: number, message?: string) => void
 
 function reporter(hooks: PipelineHooks): Reporter {
@@ -285,18 +289,26 @@ async function encode(
   report: Reporter
 ): Promise<EncodeOutputs> {
   report('encode', 0)
-  const subtitles = await extractSubtitles(binaries, source, plan.subtitles, dirs.encDir, { onLog: hooks.onLog, signal: hooks.signal })
+  // Reading the subtitles out is one pass through the file, the encode many: the first
+  // share of the step, so the bar moves while it lasts instead of sitting at the start.
+  const encodes = plan.renditions.length + plan.audio.length > 0
+  const subtitleShare = plan.subtitles.length === 0 ? 0 : encodes ? SUBTITLE_SHARE : 100
+  const subtitles = await extractSubtitles(binaries, source, plan.subtitles, dirs.encDir, {
+    onLog: hooks.onLog,
+    onProgress: (percent) => report('encode', (subtitleShare * percent) / 100),
+    signal: hooks.signal
+  })
   plan.subtitles = subtitles.extracted
   plan.skipped.push(...subtitles.failed)
   for (const item of subtitles.failed) hooks.onLog?.(`omitido subtitle ${item.id}: ${item.reason}`)
   for (const event of subtitlesEvent(subtitles)) emit(hooks, event)
 
   const { args, outputs } = buildFfmpegArgs(source, plan, dirs.encDir, input.videoEncoder)
-  if (plan.renditions.length + plan.audio.length > 0) {
+  if (encodes) {
     hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
     emit(hooks, commandEvent('ffmpeg', args, { encoder: input.videoEncoder?.kind ?? 'libx264' }))
     await runFfmpeg(binaries, args, source.durationSeconds, {
-      onProgress: (p) => report('encode', p.percent),
+      onProgress: (p) => report('encode', subtitleShare + ((100 - subtitleShare) * p.percent) / 100),
       onLog: hooks.onLog,
       signal: hooks.signal
     })

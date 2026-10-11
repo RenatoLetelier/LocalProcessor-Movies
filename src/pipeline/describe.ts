@@ -128,6 +128,13 @@ export function planEvents(plan: EncodePlan): PipelineLogEvent[] {
 
 export function subtitlesEvent(extraction: SubtitleExtraction): PipelineLogEvent[] {
   const events: PipelineLogEvent[] = []
+  for (const fallback of extraction.fallbacks) {
+    events.push({
+      level: 'warn',
+      message: `La pasada única de subtítulos sobre ${basename(fallback.input)} falló (${fallback.reason}); se convirtieron uno por uno`,
+      context: fallback
+    })
+  }
   if (extraction.extracted.length > 0) {
     events.push({
       level: 'info',
