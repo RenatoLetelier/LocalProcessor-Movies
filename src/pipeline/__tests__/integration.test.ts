@@ -255,6 +255,48 @@ describe.skipIf(!binaries)('pipeline (integration)', () => {
     expect(existsSync(join(result.outputFolder, 'audio/1_und_aac/playlist.m3u8'))).toBe(true)
   }, 60_000)
 
+  it('packages an ASS subtitle with an empty line inside a cue', async () => {
+    // "\N\N" comes out of ffmpeg as a cue plus a stray block, and Shaka used to reject the
+    // whole run with "Failed to determine block classification"
+    const ass = join(root, 'signs.ass')
+    writeFileSync(
+      ass,
+      [
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        'Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1',
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        'Dialogue: 0,0:00:00.50,0:00:02.50,Default,,0,0,0,,Grado especial\\N\\NEspíritu maldito - Rika Orimoto',
+        ''
+      ].join('\n')
+    )
+    const signs = join(root, 'signs.mkv')
+    await run(binaries!.ffmpeg, [
+      '-y', '-hide_banner', '-loglevel', 'error', '-i', join(root, 'sample.mkv'), '-i', ass, '-t', '3',
+      '-map', '0:v', '-map', '0:a:0', '-map', '1:s', '-c:v', 'copy', '-c:a', 'copy', '-c:s', 'ass',
+      '-metadata:s:s:0', 'language=spa', signs
+    ])
+    const result = await processTitle(binaries!, {
+      titleId: '00000000-0000-4000-8000-000000000005',
+      name: 'Signs',
+      sourcePath: signs,
+      outputRoot: join(root, 'out'),
+      standards: ['hls'],
+      plan: { rungs: DEFAULT_CONFIG.rungs, qualities: DEFAULT_CONFIG.qualities, segmentDurationSeconds: 2 },
+      videoEncoder: { preset: 'veryfast' }
+    })
+    const cues = readdirSync(join(result.outputFolder, 'subs/2_es'))
+      .filter((name) => name.endsWith('.vtt'))
+      .map((name) => readFileSync(join(result.outputFolder, 'subs/2_es', name), 'utf8'))
+      .join('\n')
+    expect(cues).toMatch(/Grado especial\r?\nEspíritu maldito - Rika Orimoto/)
+  }, 60_000)
+
   it('skips a subtitle ffmpeg cannot convert, or one without cues, instead of failing the whole job', async () => {
     const source = await probeSource(binaries!, join(root, 'sample.mkv'))
     const empty = join(root, 'empty.vtt')

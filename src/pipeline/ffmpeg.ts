@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SOFTWARE_ENCODER, encoderFilterSuffix, encoderGlobalArgs, encoderInputArgs, videoCodecArgs } from './encoders'
 import { run } from './exec'
@@ -193,8 +193,14 @@ export async function extractSubtitles(
     hooks.onLog?.(`ffmpeg ${args.join(' ')}`)
     try {
       await run(binaries.ffmpeg, args, { signal: hooks.signal, onStderrLine: hooks.onLog })
+      const text = await readFile(file, 'utf8')
+      const repaired = repairWebVtt(text)
+      if (repaired !== text) {
+        await writeFile(file, repaired, 'utf8')
+        hooks.onLog?.(`subtítulo ${subtitle.sourceIndex}: texto con líneas en blanco reunido con su subtítulo`)
+      }
       // The packager aborts the whole run on a WebVTT without cues (END_OF_STREAM)
-      if (!(await hasCues(file))) {
+      if (!/-->/.test(repaired)) {
         result.failed.push({ kind: 'subtitle', id: String(subtitle.sourceIndex), reason: 'la pista no contiene ningún subtítulo' })
         continue
       }
@@ -209,7 +215,35 @@ export async function extractSubtitles(
   return result
 }
 
-// A cue is a "start --> end" timing line
-async function hasCues(vttFile: string): Promise<boolean> {
-  return /-->/.test(await readFile(vttFile, 'utf8'))
+// A cue block has its "start --> end" timing line first, or second after an identifier
+function isCueBlock(block: string): boolean {
+  const [first = '', second = ''] = block.split('\n')
+  return first.includes('-->') || second.includes('-->')
+}
+
+const NON_CUE_BLOCK = /^(WEBVTT|NOTE|STYLE|REGION)(\s|$)/
+
+// WebVTT ends a cue at the first empty line, so a cue whose text has an empty line inside
+// (ASS "\N\N", common in anime signs) comes out of ffmpeg as the cue plus a stray block
+// with no timing line. Players skip that block; Shaka aborts the whole run on it ("Failed
+// to determine block classification"). A stray block goes back onto the cue it was cut
+// from; one with no cue before it belongs to nothing and is dropped.
+export function repairWebVtt(text: string): string {
+  const blocks = text
+    .replace(/\r\n?/g, '\n')
+    .split(/\n{2,}/)
+    .map((block) => block.replace(/\n+$/, ''))
+    .filter((block) => block.trim() !== '')
+  const kept: string[] = []
+  let repaired = false
+  for (const block of blocks) {
+    if (isCueBlock(block) || NON_CUE_BLOCK.test(block)) {
+      kept.push(block)
+      continue
+    }
+    repaired = true
+    const previous = kept[kept.length - 1]
+    if (previous !== undefined && isCueBlock(previous)) kept[kept.length - 1] = `${previous}\n${block}`
+  }
+  return repaired ? `${kept.join('\n\n')}\n` : text
 }

@@ -360,7 +360,10 @@ sin él, porque Shaka Packager rechaza `und`, y el manifiesto la declara `und`.
 
 **Subtítulos**
 
-- SubRip, ASS/SSA, WebVTT y `mov_text` se convierten a WebVTT segmentado.
+- SubRip, ASS/SSA, WebVTT y `mov_text` se convierten a WebVTT segmentado. Un
+  subtítulo con una línea en blanco dentro (el `\N\N` de ASS, típico de los
+  carteles en anime) queda en un solo bloque: WebVTT lo cortaría en dos, y Shaka
+  Packager rechaza el pedazo sin tiempos.
 - Los subtítulos forzados se marcan como tales en HLS y DASH. Ningún subtítulo
   se activa por defecto salvo que el MKV de origen marque uno como *default*
   (en MP4 ese indicador se ignora porque casi siempre lo lleva la primera pista).
@@ -401,7 +404,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.3.1", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.3.2", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,

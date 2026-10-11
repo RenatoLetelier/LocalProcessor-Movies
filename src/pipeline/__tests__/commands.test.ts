@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFfmpegArgs, buildSubtitleArgs, hdrToSdrFilter, parseProgressLine } from '../ffmpeg'
+import { buildFfmpegArgs, buildSubtitleArgs, hdrToSdrFilter, parseProgressLine, repairWebVtt } from '../ffmpeg'
 import { buildPackagerArgs, packagerLanguage } from '../packager'
 import { languageDisplayName, toBcp47 } from '../lang'
 import type { EncodePlan, SourceInfo } from '../types'
@@ -223,6 +223,49 @@ describe('buildSubtitleArgs', () => {
     const { args, file } = buildSubtitleArgs(source, plan.subtitles[0]!, 'C:/work/enc')
     expect(file).toMatch(/sub_3\.vtt$/)
     expect(args.join(' ')).toContain('-i C:/in/movie.mkv -map 0:3 -c:s webvtt -f webvtt')
+  })
+})
+
+describe('repairWebVtt', () => {
+  // What ffmpeg writes for an ASS line "Grado especial\N\NEspíritu maldito..."
+  const split = [
+    'WEBVTT',
+    '',
+    '00:01.000 --> 00:03.000',
+    'Grado especial',
+    '',
+    'Espíritu maldito de categoría especial - Rika Orimoto',
+    '',
+    '00:04.000 --> 00:06.000',
+    'Otro',
+    ''
+  ].join('\n')
+
+  it('puts a stray block back onto the cue it was cut from', () => {
+    expect(repairWebVtt(split)).toBe(
+      [
+        'WEBVTT',
+        '',
+        '00:01.000 --> 00:03.000',
+        'Grado especial',
+        'Espíritu maldito de categoría especial - Rika Orimoto',
+        '',
+        '00:04.000 --> 00:06.000',
+        'Otro',
+        ''
+      ].join('\n')
+    )
+  })
+
+  it('leaves a valid file untouched, cue identifiers and NOTE blocks included', () => {
+    const valid = 'WEBVTT\r\n\r\nNOTE de ffmpeg\r\n\r\n1\r\n00:01.000 --> 00:03.000\r\nHola\r\n\r\n'
+    expect(repairWebVtt(valid)).toBe(valid)
+  })
+
+  it('drops stray text with no cue before it', () => {
+    expect(repairWebVtt('WEBVTT\n\nSuelto\n\n00:01.000 --> 00:02.000\nHola\n')).toBe(
+      'WEBVTT\n\n00:01.000 --> 00:02.000\nHola\n'
+    )
   })
 })
 
