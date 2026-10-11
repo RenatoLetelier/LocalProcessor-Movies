@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { XMLBuilder, XMLParser } from 'fast-xml-parser'
 import type { TrackOverride, TrackOverrides } from '@shared/model'
@@ -186,21 +186,81 @@ export function labelMpd(text: string, metadata: TitleMetadata): string {
   return new XMLBuilder({ ...xmlOptions, format: true, indentBy: '  ', suppressEmptyNode: true }).build(document) as string
 }
 
+// ---------------------------------------------------------------- excluded tracks
+
+// The tracks that stay and the ones the overrides drop (every output of a dropped source
+// track: a Dolby copy and its AAC companion go together). At least one audio track stays.
+export function dropExcluded(metadata: TitleMetadata, overrides: TrackOverrides | null | undefined): { metadata: TitleMetadata; dropped: Track[] } {
+  const excluded = (list: TrackOverride[] | undefined): Set<number> => new Set((list ?? []).filter((o) => o.excluded).map((o) => o.sourceIndex))
+  const audio = excluded(overrides?.audio)
+  const subtitles = excluded(overrides?.subtitles)
+  const keptAudio = metadata.audioTracks.filter((t) => !audio.has(t.sourceIndex))
+  if (metadata.audioTracks.length > 0 && keptAudio.length === 0) throw new Error('Tiene que quedar al menos una pista de audio')
+  const dropped = [
+    ...metadata.audioTracks.filter((t) => audio.has(t.sourceIndex)),
+    ...metadata.subtitleTracks.filter((t) => subtitles.has(t.sourceIndex))
+  ]
+  return {
+    metadata: { ...metadata, audioTracks: keptAudio, subtitleTracks: metadata.subtitleTracks.filter((t) => !subtitles.has(t.sourceIndex)) },
+    dropped
+  }
+}
+
+// Out of the master go the dropped tracks' EXT-X-MEDIA lines, the variants of an audio
+// group left empty and the SUBTITLES reference once no subtitle is left
+export function dropFromMaster(text: string, paths: Set<string>): string {
+  const master = parseMaster(text)
+  const folderOf = (uri: string): string => uri.slice(0, uri.length - MEDIA_PLAYLIST.length - 1)
+  master.media = master.media.filter((m) => !paths.has(folderOf(attr(m.attributes, 'URI') ?? '')))
+  const groups = (type: string): Set<string> =>
+    new Set(master.media.filter((m) => attr(m.attributes, 'TYPE') === type).map((m) => attr(m.attributes, 'GROUP-ID') ?? ''))
+  const audioGroups = groups('AUDIO')
+  const subtitleGroups = groups('SUBTITLES')
+  master.variants = master.variants.filter((v) => {
+    const group = attr(v.attributes, 'AUDIO')
+    return group === undefined || audioGroups.has(group)
+  })
+  for (const variant of master.variants) {
+    const group = attr(variant.attributes, 'SUBTITLES')
+    if (group !== undefined && !subtitleGroups.has(group)) variant.attributes = variant.attributes.filter((a) => a.key !== 'SUBTITLES')
+  }
+  if (master.variants.length === 0) throw new Error('Quitar esas pistas dejaría el master sin ninguna variante')
+  return serializeMaster(master)
+}
+
+export function dropFromMpd(text: string, paths: Set<string>): string {
+  const document = new XMLParser(xmlOptions).parse(text) as XmlNode[]
+  const prune = (nodes: XmlNode[]): XmlNode[] =>
+    nodes.filter((node) => {
+      if ('AdaptationSet' in node) return !paths.has(adaptationSetPath(children(node, 'AdaptationSet')) ?? '')
+      for (const key of Object.keys(node)) if (key !== ':@' && Array.isArray(node[key])) node[key] = prune(node[key] as XmlNode[])
+      return true
+    })
+  return new XMLBuilder({ ...xmlOptions, format: true, indentBy: '  ', suppressEmptyNode: true }).build(prune(document)) as string
+}
+
 // ---------------------------------------------------------------- on disk
 
-// Relabels a packaged title folder in place. Every file is replaced atomically, so a
-// player reads the previous version or the new one, never half of each.
+// Relabels a packaged title folder in place and drops the tracks the overrides exclude.
+// Every file is replaced atomically, so a player reads the previous version or the new
+// one, never half of each; the folders of dropped tracks go last, once no manifest
+// points at them.
 export async function applyTrackLabels(titleDir: string, overrides: TrackOverrides | null | undefined): Promise<TitleMetadata> {
   const current = JSON.parse(await readFile(join(titleDir, METADATA_FILE), 'utf8')) as TitleMetadata
-  const metadata = { ...labelTracks(current, overrides), updatedAt: new Date().toISOString() }
+  const { metadata: kept, dropped } = dropExcluded(current, overrides)
+  const paths = new Set(dropped.map((t) => t.path))
+  const metadata = { ...labelTracks(kept, overrides), updatedAt: new Date().toISOString() }
   if (metadata.manifests.hls) {
     const file = join(titleDir, metadata.manifests.hls)
-    await replaceFileAtomic(file, labelMaster(await readFile(file, 'utf8'), metadata))
+    const text = await readFile(file, 'utf8')
+    await replaceFileAtomic(file, labelMaster(paths.size ? dropFromMaster(text, paths) : text, metadata))
   }
   if (metadata.manifests.dash) {
     const file = join(titleDir, metadata.manifests.dash)
-    await replaceFileAtomic(file, labelMpd(await readFile(file, 'utf8'), metadata))
+    const text = await readFile(file, 'utf8')
+    await replaceFileAtomic(file, labelMpd(paths.size ? dropFromMpd(text, paths) : text, metadata))
   }
   await replaceFileAtomic(join(titleDir, METADATA_FILE), JSON.stringify(metadata, null, 2) + '\n')
+  for (const track of dropped) await rm(join(titleDir, track.path), { recursive: true, force: true })
   return metadata
 }

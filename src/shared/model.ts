@@ -13,6 +13,10 @@ export interface TrackOverride {
   default?: boolean
   // Subtitles only
   forced?: boolean
+  // Drops the track from the published title: out of the manifests and metadata.json, and
+  // its folder deleted. No segment of anything else is touched. Final unless the title is
+  // reprocessed from its source, which applies the same overrides.
+  excluded?: boolean
 }
 
 export interface TrackOverrides {

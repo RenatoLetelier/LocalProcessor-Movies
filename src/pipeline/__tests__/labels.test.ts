@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { labelMaster, labelMpd, labelTracks } from '../labels'
+import { dropExcluded, dropFromMaster, dropFromMpd, labelMaster, labelMpd, labelTracks } from '../labels'
 import type { TitleMetadata } from '../types'
 
 // Manifests as Shaka Packager 3.9 writes them for the synthetic sample (trimmed)
@@ -182,5 +182,42 @@ describe('labelMpd', () => {
     expect(set('subs/5_en')).not.toContain('value="main"')
     expect(set('video/720p')).toContain('maxWidth="1280"')
     expect(mpd.match(/<Label>/g)).toHaveLength(6)
+  })
+})
+
+describe('dropping excluded tracks', () => {
+  it('drops every output of a source track and keeps the rest', () => {
+    const { metadata, dropped } = dropExcluded(METADATA, { audio: [{ sourceIndex: 3, excluded: true }], subtitles: [{ sourceIndex: 5, excluded: true }] })
+    expect(dropped.map((t) => t.id)).toEqual(['3_fr_ac3', '3_fr_aac', '5_en'])
+    expect(metadata.audioTracks.map((t) => t.id)).toEqual(['1_es_aac', '2_en_aac'])
+    expect(metadata.subtitleTracks.map((t) => t.id)).toEqual(['4_es'])
+  })
+
+  it('never leaves a title without audio', () => {
+    const all = METADATA.audioTracks.map((t) => ({ sourceIndex: t.sourceIndex, excluded: true }))
+    expect(() => dropExcluded(METADATA, { audio: all })).toThrow('al menos una pista de audio')
+  })
+
+  it('takes the media lines out of the master, with the variants of a group left empty', () => {
+    const master = dropFromMaster(MASTER, new Set(['audio/3_fr_ac3', 'audio/3_fr_aac']))
+    expect(master).not.toContain('Français')
+    expect(master).not.toContain('AUDIO="audio-ac3"')
+    expect(master).toContain('AUDIO="audio-aac",SUBTITLES="subs"')
+    expect(master.match(/#EXT-X-STREAM-INF/g)).toHaveLength(1)
+  })
+
+  it('drops the SUBTITLES reference once no subtitle is left', () => {
+    const master = dropFromMaster(MASTER, new Set(['subs/4_es', 'subs/5_en']))
+    expect(master).not.toContain('TYPE=SUBTITLES')
+    expect(master).not.toContain('SUBTITLES=')
+    expect(master.match(/#EXT-X-STREAM-INF/g)).toHaveLength(2)
+  })
+
+  it('takes the adaptation sets out of the MPD', () => {
+    const mpd = dropFromMpd(MPD, new Set(['audio/3_fr_ac3', 'audio/3_fr_aac', 'subs/5_en']))
+    expect(mpd).not.toContain('audio/3_fr')
+    expect(mpd).not.toContain('subs/5_en')
+    expect(mpd).toContain('audio/1_es_aac')
+    expect(mpd).toContain('video/720p')
   })
 })

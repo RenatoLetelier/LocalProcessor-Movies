@@ -404,7 +404,7 @@ curl http://127.0.0.1:4700/health
 ```
 
 ```json
-{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.3.2", "uptimeSeconds": 912 }
+{ "status": "ok", "app": "LocalProcessor-Movies", "version": "1.4.0", "uptimeSeconds": 912 }
 ```
 
 Si la conexión falla, la aplicación no está abierta. Antes de entregar algo,
@@ -601,6 +601,20 @@ Responde `204`. Cancela los jobs del título, borra su carpeta de salida y, si e
 original se subió por multipart, también la copia de `.uploads/`. Un archivo
 entregado por ruta nunca se toca.
 
+Para quedarse con lo publicado y soltar solo el original (un consumidor que deja
+de guardarlo una vez que el título está a salvo):
+
+```bash
+curl -X DELETE http://127.0.0.1:4700/titles/<id>/source
+```
+
+Responde `200 Title` con `source_path: null`. El título sigue publicado y se
+pueden cambiar o quitar sus pistas ([5.12](#512-nombres-idiomas-y-pista-predeterminada)),
+pero ya no reprocesarlo completo ni agregarle calidades hasta vincular otro
+origen con `PUT /titles/:id/source`. Un original subido por multipart se borra;
+uno entregado por ruta no se toca: borrarlo es cosa del consumidor. `409` si el
+título tiene un job en curso.
+
 ### 5.8 Reconstruir la biblioteca
 
 La carpeta de salida es autodescriptiva: si la base de datos de LocalProcessor-Movies
@@ -722,6 +736,13 @@ curl -X PUT http://127.0.0.1:4700/titles/<id>/tracks -H 'Content-Type: applicati
 - Si el título todavía no se publicó, o tiene un job en curso, se guarda y lo
   aplica el job al terminar (`applied: false`). Pertenecen al título: un
   reprocesado completo los vuelve a aplicar.
+- `excluded: true` quita la pista de lo publicado: sale de `master.m3u8` (junto
+  con las variantes de un grupo de audio que queda vacío), de `manifest.mpd` y de
+  `metadata.json`, y su carpeta se borra al final, cuando ningún manifiesto la
+  nombra. No se toca otro segmento ni hace falta el original. Siempre queda una
+  pista de audio, y una pista excluida no puede ser la predeterminada. Es
+  definitivo salvo un reprocesado completo, que vuelve a aplicar los mismos
+  valores; mandarla otra vez cuando ya no está no es error.
 - También se pueden mandar al crearlo: `POST /titles` con `tracks` (en
   multipart, un campo de texto con el mismo JSON).
 - `400` con `problems[]` si una pista no existe en el título o algo no es
@@ -763,6 +784,7 @@ audio y, en DASH, la predeterminada lleva `Role main`.
 | `GET` | `/titles/:id/files` | — | `200 { root, exists, totalBytes, fileCount, entries[] }` |
 | `POST` | `/titles/:id/reprocess` | `{ tipo: "agregar_calidad", qualities }`, `{ tipo: "agregar_pista", audio?, subtitles?, files? }` o `{ tipo: "reprocesar_completo", standards?, qualities?, segmentDurationSeconds? }` | `202 { title, job }` |
 | `PUT` | `/titles/:id/source` | `{ sourcePath }` | `200 Title` |
+| `DELETE` | `/titles/:id/source` | — | `200 Title` sin origen (ver [5.7](#57-eliminar-un-título)) |
 | `PUT` | `/titles/:id/tracks` | `{ audio?, subtitles? }` (ver [5.12](#512-nombres-idiomas-y-pista-predeterminada)) | `200 { title, applied, metadata }` |
 | `DELETE` | `/titles/:id` | — | `204` |
 | `POST` | `/titles/import` | — | `200 { imported[], relinked[], skipped[] }` |

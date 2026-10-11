@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { rm, stat } from 'node:fs/promises'
 import type { Standard } from '@shared/config'
 import type { ServerContext } from '../context'
-import { HttpError, badRequest, notFound } from '../errors'
+import { HttpError, badRequest, conflict, notFound } from '../errors'
 import type { ConfigOverrides } from '../jobs/config'
 import { enqueueTitle } from '../jobs/enqueue'
 import { importOutputFolder } from '../jobs/import'
@@ -11,7 +11,7 @@ import { linkSource } from '../jobs/link-source'
 import { saveUpload, uploadPath } from '../jobs/uploads'
 import { readFolderTree } from '../jobs/folder-tree'
 import { enqueueReprocess, type ReprocessRequest } from '../jobs/reprocess'
-import { parseTrackOverrides, relabelTitle } from '../jobs/track-overrides'
+import { forgetExcluded, parseTrackOverrides, relabelTitle } from '../jobs/track-overrides'
 import { parseJobConfig } from '../jobs/config'
 import { formatBytes } from '../logging/format'
 
@@ -144,6 +144,26 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     }
   )
 
+  // Detaches the source and keeps the published title: the consumer stops storing originals
+  // once the output is safe. Full reprocessing is no longer possible afterwards; relabelling
+  // doesn't need the source. A source uploaded through the API is ours, so it goes too.
+  app.delete<{ Params: { id: string } }>('/titles/:id/source', async (request) => {
+    const title = repos.titles.get(request.params.id)
+    if (!title) throw notFound('Título no encontrado')
+    const active = repos.jobs.listByTitle(title.id).some((j) => j.status === 'queued' || j.status === 'running')
+    if (active || title.status === 'processing') throw conflict('El título tiene un job en curso o en cola')
+
+    const removed = title.source_managed && !!title.source_path
+    if (removed) await rm(title.source_path!, { force: true })
+    const updated = repos.titles.update(title.id, { source_path: null, source_managed: false, source_hash: null })!
+    events.emit({ type: 'title.updated', title: updated })
+    log.info('titles', `Archivo de origen desvinculado de «${title.name}»`, {
+      titleId: title.id,
+      context: { sourcePath: title.source_path, removed, ip: request.ip }
+    })
+    return updated
+  })
+
   app.get<{ Params: { id: string } }>('/titles/:id', async (request) => {
     const title = repos.titles.get(request.params.id)
     if (!title) throw notFound('Título no encontrado')
@@ -197,6 +217,7 @@ export const titlesRoutes: FastifyPluginAsync<{ context: ServerContext }> = asyn
     const overrides = parseTrackOverrides(request.body ?? {}, known)
     const updated = repos.titles.update(title.id, { track_overrides: overrides })!
     const metadata = await relabelTitle(title.id, title.output_folder, overrides)
+    if (metadata) forgetExcluded(repos, title.id, overrides)
     events.emit({ type: 'title.updated', title: updated })
     log.info('titles', `Pistas de «${title.name}» ${overrides ? 'redefinidas' : 'devueltas a las del origen'}${metadata ? '' : ' (se aplicarán al publicar)'}`, {
       titleId: title.id,

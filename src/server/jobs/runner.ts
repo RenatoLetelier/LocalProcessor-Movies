@@ -16,7 +16,7 @@ import { parseJobConfig, planOptionsOf, type JobConfig } from './config'
 import type { ServerEvents } from './events'
 import { recordIncremental, recordResult } from './record'
 import { sourceHash } from './source-hash'
-import { relabelTitle } from './track-overrides'
+import { forgetExcluded, relabelTitle } from './track-overrides'
 
 export type PipelineFn = typeof processTitle
 export type IncrementalFn = typeof addToTitle
@@ -306,6 +306,9 @@ export class JobRunner {
         recordIncremental(repos, this.deps.db, result)
       }
       await this.relabelIfChanged(title.id, result.outputFolder, trackOverrides, ref)
+      // A reprocess publishes every source track again and drops the excluded ones while
+      // labelling: their rows, recreated by the job, go too
+      forgetExcluded(repos, title.id, repos.titles.get(title.id)?.track_overrides ?? null)
       this.finish(job.id, 'done', null)
       closeStep()
       const durationMs = Date.now() - startedAt

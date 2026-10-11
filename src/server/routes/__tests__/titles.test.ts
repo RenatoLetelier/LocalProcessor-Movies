@@ -185,6 +185,36 @@ describe('POST /titles', () => {
   })
 })
 
+describe('DELETE /titles/:id/source', () => {
+  it('keeps the published title, forgets the source and leaves a user-provided file alone', async () => {
+    const { title, job } = (await post({ sourcePath: join(root, 'movie.mkv') })).json()
+    await untilJob(job.id, 'done')
+
+    const del = await server.app.inject({ method: 'DELETE', url: `/titles/${title.id}/source` })
+    expect(del.statusCode).toBe(200)
+    expect(del.json()).toMatchObject({ id: title.id, source_path: null, source_hash: null, status: 'done' })
+    expect(existsSync(join(root, 'movie.mkv'))).toBe(true)
+    expect(existsSync(title.output_folder)).toBe(true)
+
+    const reprocess = await server.app.inject({ method: 'POST', url: `/titles/${title.id}/reprocess`, payload: { tipo: 'reprocesar_completo' } })
+    expect(reprocess.statusCode).toBe(409)
+  })
+
+  it('refuses while a job is running', async () => {
+    await server.app.close()
+    server = await createTestServer({ outputFolder: root, pipeline: fakePipeline({ ticks: 200, tickMs: 20 }) })
+    const { title, job } = (await post({ sourcePath: join(root, 'movie.mkv') })).json()
+    await untilJob(job.id, 'running')
+
+    expect((await server.app.inject({ method: 'DELETE', url: `/titles/${title.id}/source` })).statusCode).toBe(409)
+    expect(server.db.repos.titles.get(title.id)?.source_path).toBe(join(root, 'movie.mkv'))
+  })
+
+  it('returns 404 for unknown titles', async () => {
+    expect((await server.app.inject({ method: 'DELETE', url: '/titles/nope/source' })).statusCode).toBe(404)
+  })
+})
+
 describe('DELETE /titles/:id', () => {
   it('cancels the running job, removes the folder and keeps user-provided sources', async () => {
     await server.app.close()

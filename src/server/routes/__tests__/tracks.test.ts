@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -126,6 +126,38 @@ describe('track overrides', () => {
     const source = published(titleId)
     expect(source.master).toContain('LANGUAGE="es",NAME="Español",DEFAULT=YES')
     expect(JSON.stringify(source.metadata)).not.toContain('original')
+  })
+
+  it('drops excluded tracks: out of the manifests, folder deleted, row forgotten', async () => {
+    await start()
+    const titleId = await publishedTitle()
+    const english = published(titleId).metadata.audioTracks.filter((t) => t.sourceIndex === 2)
+    expect(english.length).toBeGreaterThan(0)
+    for (const track of english) mkdirSync(join(root, titleId, track.path), { recursive: true })
+
+    const res = await putTracks(titleId, { audio: [{ sourceIndex: 2, excluded: true }] })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ applied: true, title: { track_overrides: { audio: [{ sourceIndex: 2, excluded: true }] } } })
+    const after = published(titleId)
+    expect(after.metadata.audioTracks.map((t) => t.sourceIndex)).toEqual([1])
+    expect(after.master).not.toContain('Comentarios')
+    for (const track of english) expect(existsSync(join(root, titleId, track.path))).toBe(false)
+    expect(server.db.repos.audioTracks.listByTitle(titleId).map((t) => t.source_index)).toEqual([1])
+
+    // Sent again (the catalog always sends the whole set) it is harmless
+    expect((await putTracks(titleId, { audio: [{ sourceIndex: 2, excluded: true }, { sourceIndex: 1, name: 'Castellano' }] })).statusCode).toBe(200)
+    expect(published(titleId).master).toContain('NAME="Castellano"')
+  })
+
+  it('refuses to drop every audio track, or the default one', async () => {
+    await start()
+    const titleId = await publishedTitle()
+    const all = await putTracks(titleId, { audio: [{ sourceIndex: 1, excluded: true }, { sourceIndex: 2, excluded: true }] })
+    expect(all.statusCode).toBe(400)
+    expect(all.json().problems).toEqual(['tracks.audio: tiene que quedar al menos una pista de audio'])
+    const both = await putTracks(titleId, { audio: [{ sourceIndex: 2, excluded: true, default: true }] })
+    expect(both.statusCode).toBe(400)
+    expect(published(titleId).metadata.audioTracks.length).toBeGreaterThan(1)
   })
 
   it('checks indexes against the published tracks and 404s unknown titles', async () => {
